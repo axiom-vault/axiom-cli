@@ -73,7 +73,7 @@ brew tap axiom-vault/tap
 brew install axiomvault
 ```
 
-> **Note:** The `axiom-vault/homebrew-tap` repository must be set up separately. The formula template lives in [`Formula/axiomvault.rb`](Formula/axiomvault.rb) in this repository.
+The Homebrew formula is published from the [`axiom-vault/homebrew-tap`](https://github.com/axiom-vault/homebrew-tap) repository after each stable release.
 
 ### AUR (Arch Linux)
 

@@ -290,7 +290,28 @@ jobs:
             --notes-file release-notes.md \
             --latest
 
-      - name: Update Homebrew formula SHA256 sums
+      - name: Check Homebrew tap token
+        id: homebrew_tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN}" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not configured; skipping Homebrew tap update."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout Homebrew tap
+        if: steps.homebrew_tap.outputs.enabled == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: axiom-vault/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Homebrew tap formula
+        if: steps.homebrew_tap.outputs.enabled == 'true'
         env:
           TAG: ${{ needs.validate.outputs.tag }}
         run: |
@@ -305,18 +326,52 @@ jobs:
           SHA_X86_64_LINUX="$(get_sha 'axiomvault-x86_64-unknown-linux-gnu.tar.gz')"
           VERSION="${TAG#v}"
 
-          sed -i \
-            -e "s/version \".*\"/version \"${VERSION}\"/" \
-            -e "s/PLACEHOLDER_AARCH64_APPLE_DARWIN/${SHA_AARCH64_DARWIN}/" \
-            -e "s/PLACEHOLDER_X86_64_APPLE_DARWIN/${SHA_X86_64_DARWIN}/" \
-            -e "s/PLACEHOLDER_AARCH64_LINUX/${SHA_AARCH64_LINUX}/" \
-            -e "s/PLACEHOLDER_X86_64_LINUX/${SHA_X86_64_LINUX}/" \
-            Formula/axiomvault.rb
+          mkdir -p homebrew-tap/Formula
+          cat > homebrew-tap/Formula/axiomvault.rb <<FORMULA_EOF
+          class Axiomvault < Formula
+            desc "Command-line interface for AxiomVault encrypted vault"
+            homepage "https://github.com/axiom-vault/axiom-cli"
+            version "${VERSION}"
+            license "Apache-2.0"
 
-          # Also patch any previously-set real SHA256 values when re-releasing
-          # (sed above already rewrites version; the sha lines are unique per build)
+            on_macos do
+              on_arm do
+                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiomvault-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_AARCH64_DARWIN}"
+              end
+
+              on_intel do
+                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiomvault-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_X86_64_DARWIN}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiomvault-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_AARCH64_LINUX}"
+              end
+
+              on_intel do
+                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiomvault-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_X86_64_LINUX}"
+              end
+            end
+
+            def install
+              bin.install "axiomvault"
+            end
+
+            test do
+              system "#{bin}/axiomvault", "--version"
+            end
+          end
+          FORMULA_EOF
+
+          cd homebrew-tap
+          ruby -c Formula/axiomvault.rb
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/axiomvault.rb
-          git diff --cached --quiet || git commit -m "chore: update Homebrew formula for ${TAG}"
-          git push origin HEAD
+          git diff --cached --quiet || git commit -m "axiomvault ${TAG}"
+          git push
