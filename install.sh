@@ -12,6 +12,7 @@ GITHUB_API="https://api.github.com/repos/${REPO}/releases"
 INCLUDE_PRERELEASES=0
 INSTALL_DIR_OVERRIDE=""
 COMPLETIONS_SHELL=""
+UPDATE_SHELL_PROFILE=0
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -35,18 +36,24 @@ Options:
       --dir DIR           Install into DIR instead of /usr/local/bin or ~/.local/bin
       --completions SHELL Install shell completions after installing the binary
                           Supported shells: bash, fish, zsh
+      --update-shell-profile
+                          With --completions, add required shell setup to rc files
+                          when missing. Currently only zsh needs rc setup.
 
 Environment:
   AXIOMVAULT_VERSION      Same as --version
   AXIOMVAULT_PRERELEASE   Set to 1/true/yes to allow latest prerelease fallback
   AXIOMVAULT_INSTALL_DIR  Same as --dir
   AXIOMVAULT_COMPLETIONS   Same as --completions
+  AXIOMVAULT_UPDATE_SHELL_PROFILE
+                          Set to 1/true/yes to update shell profile files
 
 Examples:
   ./install.sh --help
   ./install.sh --version v0.1.0-beta.2
   ./install.sh --prerelease
   ./install.sh --version v0.1.0-beta.2 --completions zsh
+  ./install.sh --version v0.1.0-beta.2 --completions zsh --update-shell-profile
   AXIOMVAULT_INSTALL_DIR="$HOME/.local/bin" ./install.sh --version v0.1.0-beta.2
 
 By default, this installer only installs stable GitHub Releases. If this project
@@ -97,6 +104,10 @@ parse_args() {
                 COMPLETIONS_SHELL="${1#*=}"
                 shift
                 ;;
+            --update-shell-profile)
+                UPDATE_SHELL_PROFILE=1
+                shift
+                ;;
             *)
                 die "Unknown option: $1. Run ./install.sh --help for usage."
                 ;;
@@ -121,6 +132,14 @@ parse_args() {
     case "${AXIOMVAULT_PRERELEASE:-}" in
         1|true|TRUE|yes|YES) INCLUDE_PRERELEASES=1 ;;
     esac
+
+    case "${AXIOMVAULT_UPDATE_SHELL_PROFILE:-}" in
+        1|true|TRUE|yes|YES) UPDATE_SHELL_PROFILE=1 ;;
+    esac
+
+    if [ "${UPDATE_SHELL_PROFILE}" -eq 1 ] && [ -z "${COMPLETIONS_SHELL}" ]; then
+        die "--update-shell-profile requires --completions <shell>."
+    fi
 }
 
 # ── platform detection ────────────────────────────────────────────────────────
@@ -176,11 +195,67 @@ resolve_version() {
 
 # ── install directory ─────────────────────────────────────────────────────────
 
+normalize_shell_line() {
+    printf '%s' "$1" | tr -d '[:space:]'
+}
+
+profile_has_line() {
+    profile="$1"
+    wanted="$(normalize_shell_line "$2")"
+
+    [ -f "${profile}" ] || return 1
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ "$(normalize_shell_line "${line}")" = "${wanted}" ] && return 0
+    done < "${profile}"
+
+    return 1
+}
+
+update_zsh_profile() {
+    profile="${HOME}/.zshrc"
+    fpath_line='fpath=(~/.zsh/completions $fpath)'
+    compinit_line='autoload -Uz compinit && compinit'
+
+    mkdir -p "$(dirname "${profile}")"
+    touch "${profile}"
+
+    has_fpath=0
+    has_compinit=0
+    profile_has_line "${profile}" "${fpath_line}" && has_fpath=1
+    profile_has_line "${profile}" "${compinit_line}" && has_compinit=1
+
+    if [ "${has_fpath}" -eq 1 ] && [ "${has_compinit}" -eq 1 ]; then
+        note "${profile} already contains zsh completion setup."
+        return
+    fi
+
+    {
+        printf '\n# >>> axiomvault completions >>>\n'
+        [ "${has_fpath}" -eq 1 ] || printf '%s\n' "${fpath_line}"
+        [ "${has_compinit}" -eq 1 ] || printf '%s\n' "${compinit_line}"
+        printf '# <<< axiomvault completions <<<\n'
+    } >> "${profile}"
+
+    note "Updated ${profile} for zsh completions. Restart zsh or run: exec zsh"
+}
+
+update_shell_profile() {
+    [ "${UPDATE_SHELL_PROFILE}" -eq 1 ] || return 0
+
+    case "${COMPLETIONS_SHELL}" in
+        zsh) update_zsh_profile ;;
+        bash) note "No shell profile changes needed for bash completions at the installed location." ;;
+        fish) note "No shell profile changes needed for fish completions at the installed location." ;;
+    esac
+}
+
 install_completions() {
     [ -n "${COMPLETIONS_SHELL}" ] || return 0
 
     say "Installing ${COMPLETIONS_SHELL} completions..."
     "${INSTALL_DIR}/${BIN_NAME}" completions "${COMPLETIONS_SHELL}" --install
+    update_shell_profile
 }
 
 completion_hint_shell() {
