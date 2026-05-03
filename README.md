@@ -8,7 +8,7 @@
   <a href="https://github.com/axiom-vault/axiom-cli/actions/workflows/rust-ci.yml"><img src="https://github.com/axiom-vault/axiom-cli/actions/workflows/rust-ci.yml/badge.svg" alt="Rust CI"></a>
   <a href="https://github.com/axiom-vault/axiom-cli/actions/workflows/pr-check.yml"><img src="https://github.com/axiom-vault/axiom-cli/actions/workflows/pr-check.yml/badge.svg" alt="PR Check"></a>
   <a href="https://github.com/axiom-vault/axiom-cli/releases/latest"><img src="https://img.shields.io/github/v/release/axiom-vault/axiom-cli?include_prereleases" alt="Latest Release"></a>
-  <a href="https://github.com/axiom-vault/axiom-cli/blob/master/LICENSE"><img src="https://img.shields.io/github/license/axiom-vault/axiom-cli" alt="License"></a>
+  <a href="https://github.com/axiom-vault/axiom-cli/blob/main/LICENSE"><img src="https://img.shields.io/github/license/axiom-vault/axiom-cli" alt="License"></a>
 </p>
 
 ---
