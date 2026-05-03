@@ -50,11 +50,28 @@ resolve_version() {
         echo "${AXIOMVAULT_VERSION}"
         return
     fi
-    # Fetch latest stable release tag from GitHub API
+
     need curl
-    curl -sfL "${GITHUB_API}/latest" \
-        | grep '"tag_name"' \
-        | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+
+    # Prefer the latest stable release. GitHub returns 404 here when a repo only
+    # has prereleases, so do not let `set -euo pipefail` abort before we can
+    # provide a fallback or a useful error message.
+    latest_json="$(curl -sfL "${GITHUB_API}/latest" 2>/dev/null || true)"
+    latest_tag="$(printf '%s\n' "${latest_json}" \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
+        | head -n 1)"
+    if [ -n "${latest_tag}" ]; then
+        echo "${latest_tag}"
+        return
+    fi
+
+    # Fall back to the newest release, including prereleases. This keeps the
+    # installer usable before the first stable release exists.
+    warn "No stable release found; falling back to the latest prerelease."
+    releases_json="$(curl -sfL "${GITHUB_API}" 2>/dev/null || true)"
+    printf '%s\n' "${releases_json}" \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
+        | head -n 1
 }
 
 # ── install directory ─────────────────────────────────────────────────────────
