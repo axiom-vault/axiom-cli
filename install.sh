@@ -11,6 +11,7 @@ BIN_NAME="axiomvault"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases"
 INCLUDE_PRERELEASES=0
 INSTALL_DIR_OVERRIDE=""
+COMPLETIONS_SHELL=""
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -32,16 +33,20 @@ Options:
   -v, --version VERSION   Install a specific release tag, e.g. v0.1.0-beta.2
       --prerelease        Allow installing the latest prerelease when no stable release exists
       --dir DIR           Install into DIR instead of /usr/local/bin or ~/.local/bin
+      --completions SHELL Install shell completions after installing the binary
+                          Supported shells: bash, fish, zsh
 
 Environment:
   AXIOMVAULT_VERSION      Same as --version
   AXIOMVAULT_PRERELEASE   Set to 1/true/yes to allow latest prerelease fallback
   AXIOMVAULT_INSTALL_DIR  Same as --dir
+  AXIOMVAULT_COMPLETIONS   Same as --completions
 
 Examples:
   ./install.sh --help
   ./install.sh --version v0.1.0-beta.2
   ./install.sh --prerelease
+  ./install.sh --version v0.1.0-beta.2 --completions zsh
   AXIOMVAULT_INSTALL_DIR="$HOME/.local/bin" ./install.sh --version v0.1.0-beta.2
 
 By default, this installer only installs stable GitHub Releases. If this project
@@ -83,6 +88,15 @@ parse_args() {
                 INSTALL_DIR_OVERRIDE="${1#*=}"
                 shift
                 ;;
+            --completions)
+                [ "$#" -ge 2 ] || die "--completions requires a shell: bash, fish, or zsh."
+                COMPLETIONS_SHELL="$2"
+                shift 2
+                ;;
+            --completions=*)
+                COMPLETIONS_SHELL="${1#*=}"
+                shift
+                ;;
             *)
                 die "Unknown option: $1. Run ./install.sh --help for usage."
                 ;;
@@ -91,6 +105,17 @@ parse_args() {
 
     if [ -n "${AXIOMVAULT_INSTALL_DIR:-}" ]; then
         INSTALL_DIR_OVERRIDE="${AXIOMVAULT_INSTALL_DIR}"
+    fi
+
+    if [ -n "${AXIOMVAULT_COMPLETIONS:-}" ]; then
+        COMPLETIONS_SHELL="${AXIOMVAULT_COMPLETIONS}"
+    fi
+
+    if [ -n "${COMPLETIONS_SHELL}" ]; then
+        case "${COMPLETIONS_SHELL}" in
+            bash|fish|zsh) ;;
+            *) die "Unsupported completions shell '${COMPLETIONS_SHELL}'. Supported shells: bash, fish, zsh." ;;
+        esac
     fi
 
     case "${AXIOMVAULT_PRERELEASE:-}" in
@@ -150,6 +175,13 @@ resolve_version() {
 }
 
 # ── install directory ─────────────────────────────────────────────────────────
+
+install_completions() {
+    [ -n "${COMPLETIONS_SHELL}" ] || return 0
+
+    say "Installing ${COMPLETIONS_SHELL} completions..."
+    "${INSTALL_DIR}/${BIN_NAME}" completions "${COMPLETIONS_SHELL}" --install
+}
 
 pick_install_dir() {
     if [ -n "${INSTALL_DIR_OVERRIDE}" ]; then
@@ -212,6 +244,8 @@ main() {
     say "Installing to ${INSTALL_DIR}/${BIN_NAME}..."
     mv "${BIN_NAME}" "${INSTALL_DIR}/${BIN_NAME}"
     chmod +x "${INSTALL_DIR}/${BIN_NAME}"
+
+    install_completions
 
     say "Done! ${BIN_NAME} ${VERSION} installed."
 
