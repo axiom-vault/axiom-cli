@@ -172,6 +172,8 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            deb: true
+            rpm: true
           - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             cross_compiler: gcc-aarch64-linux-gnu
@@ -204,15 +206,35 @@ jobs:
           fi
           cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package binary
+      - name: Package binary (tarball)
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../axiomvault-${{ matrix.target }}.tar.gz axiomvault
 
+      - name: Build Debian package (.deb)
+        if: matrix.deb
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/debian/axiomvault_*.deb \
+             axiomvault-${{ matrix.target }}.deb
+
+      - name: Build RPM package (.rpm)
+        if: matrix.rpm
+        run: |
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/generate-rpm/axiomvault-*.rpm \
+             axiomvault-${{ matrix.target }}.rpm
+
       - uses: actions/upload-artifact@v4
         with:
           name: axiomvault-${{ matrix.target }}
-          path: axiomvault-${{ matrix.target }}.tar.gz
+          path: |
+            axiomvault-${{ matrix.target }}.tar.gz
+            axiomvault-${{ matrix.target }}.deb
+            axiomvault-${{ matrix.target }}.rpm
+          if-no-files-found: ignore
           retention-days: 14
 
   publish:
@@ -230,13 +252,15 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -type f -name '*.tar.gz' -exec sha256sum {} + | sed 's|  \./[^/]*/|  |' > SHA256SUMS
+          find . -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' \) \
+            -exec sha256sum {} + | sed 's|  \./[^/]*/|  |' > SHA256SUMS
           cat SHA256SUMS
 
       - name: Collect release assets
         run: |
           mkdir -p release-assets
-          find artifacts -type f \( -name '*.tar.gz' -o -name 'SHA256SUMS' \) -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name 'SHA256SUMS' \) \
+            -exec cp {} release-assets/ \;
           echo "--- Assets ---"
           ls -lh release-assets/
 
@@ -265,3 +289,34 @@ jobs:
             --title "$TAG" \
             --notes-file release-notes.md \
             --latest
+
+      - name: Update Homebrew formula SHA256 sums
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          SHA256SUMS_FILE="release-assets/SHA256SUMS"
+
+          get_sha() { grep "$1" "$SHA256SUMS_FILE" | awk '{print $1}'; }
+
+          SHA_AARCH64_DARWIN="$(get_sha 'axiomvault-aarch64-apple-darwin.tar.gz')"
+          SHA_X86_64_DARWIN="$(get_sha 'axiomvault-x86_64-apple-darwin.tar.gz')"
+          SHA_AARCH64_LINUX="$(get_sha 'axiomvault-aarch64-unknown-linux-gnu.tar.gz')"
+          SHA_X86_64_LINUX="$(get_sha 'axiomvault-x86_64-unknown-linux-gnu.tar.gz')"
+          VERSION="${TAG#v}"
+
+          sed -i \
+            -e "s/version \".*\"/version \"${VERSION}\"/" \
+            -e "s/PLACEHOLDER_AARCH64_APPLE_DARWIN/${SHA_AARCH64_DARWIN}/" \
+            -e "s/PLACEHOLDER_X86_64_APPLE_DARWIN/${SHA_X86_64_DARWIN}/" \
+            -e "s/PLACEHOLDER_AARCH64_LINUX/${SHA_AARCH64_LINUX}/" \
+            -e "s/PLACEHOLDER_X86_64_LINUX/${SHA_X86_64_LINUX}/" \
+            Formula/axiomvault.rb
+
+          # Also patch any previously-set real SHA256 values when re-releasing
+          # (sed above already rewrites version; the sha lines are unique per build)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/axiomvault.rb
+          git diff --cached --quiet || git commit -m "chore: update Homebrew formula for ${TAG}"
+          git push origin HEAD

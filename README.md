@@ -22,13 +22,78 @@
 
 **Core library:** [axiom-vault/axiom-core](https://github.com/axiom-vault/axiom-core)
 
-## Quick Start
+## Installation
 
-### Prerequisites
+### Quick install (Linux & macOS)
 
-- [Rust](https://rustup.rs/) stable toolchain
+```bash
+curl -fsSL https://raw.githubusercontent.com/axiom-vault/axiom-cli/main/install.sh | bash
+```
 
-### Build
+The script auto-detects your OS and architecture, downloads the matching prebuilt binary from GitHub Releases, verifies its SHA-256 checksum, and installs it to `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` is not writable).
+
+### Prebuilt binaries
+
+Download the right tarball from [Releases](https://github.com/axiom-vault/axiom-cli/releases/latest):
+
+| Platform | Asset |
+|----------|-------|
+| Linux x86_64 | `axiomvault-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `axiomvault-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS x86_64 | `axiomvault-x86_64-apple-darwin.tar.gz` |
+| macOS arm64 (M-series) | `axiomvault-aarch64-apple-darwin.tar.gz` |
+
+Each release also ships a `SHA256SUMS` file. Example for Linux x86_64:
+
+```bash
+curl -L https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiomvault-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv axiomvault /usr/local/bin/
+```
+
+### Debian / Ubuntu (.deb)
+
+```bash
+# Download and install the .deb for x86_64
+curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiomvault-x86_64-unknown-linux-gnu.deb
+sudo dpkg -i axiomvault-x86_64-unknown-linux-gnu.deb
+```
+
+### RPM-based (Fedora, RHEL, openSUSE)
+
+```bash
+# Download and install the .rpm for x86_64
+curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiomvault-x86_64-unknown-linux-gnu.rpm
+sudo rpm -i axiomvault-x86_64-unknown-linux-gnu.rpm
+```
+
+### Homebrew (macOS & Linux)
+
+```bash
+brew tap axiom-vault/tap
+brew install axiomvault
+```
+
+> **Note:** The `axiom-vault/homebrew-tap` repository must be set up separately. The formula template lives in [`Formula/axiomvault.rb`](Formula/axiomvault.rb) in this repository.
+
+### AUR (Arch Linux)
+
+```bash
+# Using an AUR helper such as yay:
+yay -S axiomvault-bin
+```
+
+> **Note:** An AUR package (`axiomvault-bin`) is planned. Track progress in the GitHub Issues.
+
+### From source (cargo)
+
+```bash
+# Requires Rust stable. The git dependency on axiom-core is not yet on crates.io.
+cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli
+```
+
+## Build from Source
+
+Requires the [Rust](https://rustup.rs/) stable toolchain.
 
 ```bash
 git clone https://github.com/axiom-vault/axiom-cli.git
@@ -38,7 +103,7 @@ cargo build --release
 
 The binary is produced at `target/release/axiomvault`.
 
-### Usage
+## Usage
 
 ```bash
 # Create a vault
