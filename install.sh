@@ -34,7 +34,9 @@ Options:
   -v, --version VERSION   Install a specific release tag, e.g. v0.1.0-beta.2
       --prerelease        Allow installing the latest prerelease when no stable release exists
       --dir DIR           Install into DIR instead of /usr/local/bin or ~/.local/bin
-      --completions SHELL Install shell completions after installing the binary
+      --completions [SHELL]
+                          Install shell completions after installing the binary.
+                          If SHELL is omitted, detect it from $SHELL.
                           Supported shells: bash, fish, zsh
       --update-shell-profile
                           With --completions, add required shell setup to rc files
@@ -44,7 +46,7 @@ Environment:
   AXIOMVAULT_VERSION      Same as --version
   AXIOMVAULT_PRERELEASE   Set to 1/true/yes to allow latest prerelease fallback
   AXIOMVAULT_INSTALL_DIR  Same as --dir
-  AXIOMVAULT_COMPLETIONS   Same as --completions
+  AXIOMVAULT_COMPLETIONS   Shell to use for completions, or 'auto'
   AXIOMVAULT_UPDATE_SHELL_PROFILE
                           Set to 1/true/yes to update shell profile files
 
@@ -52,8 +54,9 @@ Examples:
   ./install.sh --help
   ./install.sh --version v0.1.0-beta.2
   ./install.sh --prerelease
+  ./install.sh --version v0.1.0-beta.2 --completions
   ./install.sh --version v0.1.0-beta.2 --completions zsh
-  ./install.sh --version v0.1.0-beta.2 --completions zsh --update-shell-profile
+  ./install.sh --version v0.1.0-beta.2 --completions --update-shell-profile
   AXIOMVAULT_INSTALL_DIR="$HOME/.local/bin" ./install.sh --version v0.1.0-beta.2
 
 By default, this installer only installs stable GitHub Releases. If this project
@@ -96,9 +99,13 @@ parse_args() {
                 shift
                 ;;
             --completions)
-                [ "$#" -ge 2 ] || die "--completions requires a shell: bash, fish, or zsh."
-                COMPLETIONS_SHELL="$2"
-                shift 2
+                if [ "$#" -ge 2 ] && [ "${2#-}" = "$2" ]; then
+                    COMPLETIONS_SHELL="$2"
+                    shift 2
+                else
+                    COMPLETIONS_SHELL="auto"
+                    shift
+                fi
                 ;;
             --completions=*)
                 COMPLETIONS_SHELL="${1#*=}"
@@ -120,6 +127,10 @@ parse_args() {
 
     if [ -n "${AXIOMVAULT_COMPLETIONS:-}" ]; then
         COMPLETIONS_SHELL="${AXIOMVAULT_COMPLETIONS}"
+    fi
+
+    if [ "${COMPLETIONS_SHELL}" = "auto" ]; then
+        COMPLETIONS_SHELL="$(detect_completion_shell)"
     fi
 
     if [ -n "${COMPLETIONS_SHELL}" ]; then
@@ -157,6 +168,13 @@ detect_arch() {
         x86_64)         echo "x86_64" ;;
         aarch64|arm64)  echo "aarch64" ;;
         *)              die "Unsupported architecture: $(uname -m)" ;;
+    esac
+}
+
+detect_completion_shell() {
+    case "$(basename "${SHELL:-}")" in
+        bash|fish|zsh) basename "${SHELL}" ;;
+        *) die "Could not auto-detect shell for completions. Pass --completions bash, fish, or zsh." ;;
     esac
 }
 
