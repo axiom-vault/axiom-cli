@@ -49,7 +49,7 @@ pub(crate) enum RaidModeArg {
 #[derive(Parser)]
 #[command(name = "axiomvault")]
 #[command(about = "AxiomVault - Encrypted vault management")]
-#[command(version = env!("AXIOMVAULT_VERSION"))]
+#[command(version = option_env!("AXIOMVAULT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")))]
 pub(crate) struct Cli {
     /// Enable verbose logging.
     #[arg(short, long)]
