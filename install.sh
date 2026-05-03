@@ -183,6 +183,28 @@ install_completions() {
     "${INSTALL_DIR}/${BIN_NAME}" completions "${COMPLETIONS_SHELL}" --install
 }
 
+completion_hint_shell() {
+    case "$(basename "${SHELL:-}")" in
+        bash|fish|zsh) basename "${SHELL}" ;;
+        *) echo "" ;;
+    esac
+}
+
+print_completion_hint() {
+    [ -z "${COMPLETIONS_SHELL}" ] || return 0
+
+    hint_shell="$(completion_hint_shell)"
+    echo ""
+    if [ -n "${hint_shell}" ]; then
+        note "Shell completions are available. Enable them with:"
+        note "  ${BIN_NAME} completions ${hint_shell} --install"
+        note "Or rerun this installer with: ./install.sh --completions ${hint_shell}"
+    else
+        note "Shell completions are available for bash, fish, and zsh."
+        note "Run: ${BIN_NAME} completions <shell> --install"
+    fi
+}
+
 pick_install_dir() {
     if [ -n "${INSTALL_DIR_OVERRIDE}" ]; then
         echo "${INSTALL_DIR_OVERRIDE}"
@@ -248,6 +270,8 @@ main() {
     install_completions
 
     say "Done! ${BIN_NAME} ${VERSION} installed."
+
+    print_completion_hint
 
     if [[ "${INSTALL_DIR}" == *"/.local/bin" ]]; then
         case ":${PATH:-}:" in
