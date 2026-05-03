@@ -15,6 +15,7 @@ INSTALL_DIR_OVERRIDE=""
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
+note() { printf '\033[1;34mnote:\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -140,7 +141,7 @@ resolve_version() {
         releases_json="$(curl -sfL "${GITHUB_API}" 2>/dev/null || true)"
         prerelease_tag="$(printf '%s\n' "${releases_json}" | extract_first_tag)"
         [ -n "${prerelease_tag}" ] || die "No GitHub Releases found for ${REPO}."
-        warn "No stable release found; installing latest prerelease ${prerelease_tag}."
+        note "No stable release found; installing latest prerelease ${prerelease_tag}."
         echo "${prerelease_tag}"
         return
     fi
@@ -215,10 +216,15 @@ main() {
     say "Done! ${BIN_NAME} ${VERSION} installed."
 
     if [[ "${INSTALL_DIR}" == *"/.local/bin" ]]; then
-        echo ""
-        warn "${INSTALL_DIR} may not be in your PATH."
-        warn "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-        warn "  export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+        case ":${PATH:-}:" in
+            *":${INSTALL_DIR}:"*) ;;
+            *)
+                echo ""
+                warn "${INSTALL_DIR} is not in your PATH."
+                warn "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
+                warn "  export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+                ;;
+        esac
     fi
 }
 
