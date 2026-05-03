@@ -1,0 +1,60 @@
+[package]
+name = "axiomvault-cli"
+version = "0.1.0"
+edition = "2021"
+authors = ["Christian Pojoni <christian@axiom-vault.com>"]
+license = "Apache-2.0"
+description = "Command-line interface for AxiomVault encrypted vault"
+homepage = "https://github.com/axiom-vault/axiom-cli"
+repository = "https://github.com/axiom-vault/axiom-cli"
+
+[[bin]]
+name = "axiomvault"
+path = "src/main.rs"
+
+# ── Debian package (cargo-deb) ────────────────────────────────────────────────
+[package.metadata.deb]
+name = "axiomvault"
+maintainer = "Christian Pojoni <christian@axiom-vault.com>"
+copyright = "2024-2026 Christian Pojoni"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+AxiomVault CLI encrypts your files locally before they touch any cloud service. \
+A zero-knowledge, client-side encrypted vault with Google Drive sync support.\
+"""
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    { source = "target/release/axiomvault", dest = "/usr/bin/axiomvault", mode = "0755" },
+    { source = "README.md", dest = "/usr/share/doc/axiomvault/README.md", mode = "0644" },
+]
+
+# ── RPM package (cargo-generate-rpm) ─────────────────────────────────────────
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/axiomvault", dest = "/usr/bin/axiomvault", mode = "0755" },
+    { source = "README.md", dest = "/usr/share/doc/axiomvault/README.md", mode = "0644" },
+]
+
+[dependencies]
+axiomvault-common = { git = "https://github.com/axiom-vault/axiom-core" }
+axiomvault-crypto = { git = "https://github.com/axiom-vault/axiom-core" }
+axiomvault-storage = { git = "https://github.com/axiom-vault/axiom-core" }
+axiomvault-vault = { git = "https://github.com/axiom-vault/axiom-core" }
+axiomvault-sync = { git = "https://github.com/axiom-vault/axiom-core" }
+axiomvault-webdav = { git = "https://github.com/axiom-vault/axiom-core" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+clap_complete = "4.6"
+tokio = { version = "1.52", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+rpassword = "7.0"
+open = "5.3"
+url = "2.5"
+zeroize = { version = "1.7", features = ["derive"] }

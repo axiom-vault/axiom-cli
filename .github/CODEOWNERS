@@ -1,0 +1,14 @@
+# CODEOWNERS for AxiomVault CLI
+# These owners will be the default owners for everything in the repo.
+
+# Global owners
+* @5queezer
+
+# CLI source
+/src/ @5queezer
+
+# CI/CD configuration
+/.github/ @5queezer
+
+# Documentation
+*.md @5queezer

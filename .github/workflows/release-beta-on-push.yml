@@ -1,0 +1,259 @@
+name: Release Beta
+
+on:
+  push:
+    branches: [master, main]
+
+concurrency:
+  group: release-beta
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Resolve Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      skip: ${{ steps.ver.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Compute beta version
+        id: ver
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          base_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+
+          # Skip beta if the pushed commits changed the version in Cargo.toml
+          # (stable release workflow handles version bumps)
+          if [[ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]] && \
+             git diff "$BEFORE_SHA" "$GITHUB_SHA" -- Cargo.toml | grep -qE '^[+-]version = "'; then
+            echo "Version bump detected in Cargo.toml — skipping beta release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Skip beta if a stable tag already exists for this version
+          if git ls-remote --exit-code --tags origin "refs/tags/v${base_version}" >/dev/null 2>&1; then
+            echo "Stable tag v${base_version} exists — skipping beta release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          beta_tag="v${base_version}-beta.${GITHUB_RUN_NUMBER}"
+          echo "version=${base_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${beta_tag}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Beta release: ${beta_tag}"
+
+  release-notes:
+    name: Generate Release Notes
+    needs: [version]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      notes: ${{ steps.notes.outputs.body }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Build release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Find the previous stable tag to capture the full release cycle
+          PREV_TAG=$(git tag --sort=-creatordate \
+            | grep -vE '\-beta\.' \
+            | head -1 || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          # Extract features only (feat commits) — skip bug fixes for clean notes
+          FEATURES=$(git log "$RANGE" --pretty=format:"%s" --no-merges \
+            | grep -iE '^feat(\(|:)' \
+            | sed 's/^feat(\([^)]*\)): /\1: /' \
+            | sed 's/^feat: //' \
+            | sed 's/ (#[0-9]*)$//' \
+            | sort -uf \
+            | while IFS= read -r line; do echo "- ${line}"; done || true)
+
+          if [ -z "$FEATURES" ]; then
+            FEATURES="- Incremental improvements and polish"
+          fi
+
+          # Collect ALL unique contributors: git authors + Co-Authored-By
+          GIT_AUTHORS=$(git log "$RANGE" --pretty=format:"%an" --no-merges | sort -uf || true)
+          CO_AUTHORS=$(git log "$RANGE" --pretty=format:"%b" --no-merges \
+            | grep -ioE 'Co-Authored-By: *[^<]+' \
+            | sed 's/Co-Authored-By: *//i' \
+            | sed 's/ *$//' \
+            | sort -uf || true)
+
+          # Merge, deduplicate, and filter out bots
+          ALL_CONTRIBUTORS=$(printf "%s\n%s" "$GIT_AUTHORS" "$CO_AUTHORS" \
+            | sort -uf \
+            | grep -v '^$' \
+            | grep -viE '\[bot\]$|^dependabot|^github-actions|^copilot|^Claude' \
+            | while IFS= read -r name; do echo "- ${name}"; done || true)
+
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG_LINE="*Full changelog: ${PREV_TAG}...HEAD*"
+          else
+            CHANGELOG_LINE="*Initial release*"
+          fi
+
+          BODY=$(cat <<NOTES_EOF
+          ## What's New
+
+          ${FEATURES}
+
+          ## Contributors
+
+          ${ALL_CONTRIBUTORS}
+
+          ---
+          ${CHANGELOG_LINE}
+          NOTES_EOF
+          )
+
+          {
+            echo "body<<BODY_EOF"
+            echo "$BODY"
+            echo "BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [version]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            deb: true
+            rpm: true
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            cross_compiler: gcc-aarch64-linux-gnu
+            linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER
+            linker: aarch64-linux-gnu-gcc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ matrix.os }}-${{ matrix.target }}
+
+      - name: Install cross compiler
+        if: matrix.cross_compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ${{ matrix.cross_compiler }}
+
+      - name: Build release
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.linker_env || '' }}" ] && [ -n "${{ matrix.linker || '' }}" ]; then
+            export "${{ matrix.linker_env }}=${{ matrix.linker }}"
+          fi
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package binary (tarball)
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../axiomvault-${{ matrix.target }}.tar.gz axiomvault
+
+      - name: Build Debian package (.deb)
+        if: matrix.deb
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/debian/axiomvault_*.deb \
+             axiomvault-${{ matrix.target }}.deb
+
+      - name: Build RPM package (.rpm)
+        if: matrix.rpm
+        run: |
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/generate-rpm/axiomvault-*.rpm \
+             axiomvault-${{ matrix.target }}.rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: axiomvault-${{ matrix.target }}
+          path: |
+            axiomvault-${{ matrix.target }}.tar.gz
+            axiomvault-${{ matrix.target }}.deb
+            axiomvault-${{ matrix.target }}.rpm
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    name: Publish Beta Release
+    needs: [version, release-notes, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: axiomvault-*
+          path: artifacts
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' \) \
+            -exec sha256sum {} + | sed 's|  \./[^/]*/|  |' > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name 'SHA256SUMS' \) \
+            -exec cp {} release-assets/ \;
+          echo "--- Assets ---"
+          ls -lh release-assets/
+
+      - name: Write release notes
+        env:
+          NOTES: ${{ needs.release-notes.outputs.notes }}
+        run: printf '%s\n' "$NOTES" > release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            --prerelease

@@ -1,0 +1,147 @@
+name: PR Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Quick check - runs first to fail fast
+  quick-check:
+    name: Quick Check
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check compilation
+        run: cargo check
+
+      - name: Run Clippy
+        run: cargo clippy -- -D warnings
+
+  # Check PR metadata
+  pr-metadata:
+    name: PR Metadata Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Check that title is not empty and has reasonable length
+          if [ ${#TITLE} -lt 10 ]; then
+            echo "PR title is too short. Please provide a descriptive title."
+            exit 1
+          fi
+          if [ ${#TITLE} -gt 100 ]; then
+            echo "PR title is too long. Please keep it under 100 characters."
+            exit 1
+          fi
+          echo "PR title looks good: ${TITLE}"
+
+      - name: Check PR description
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if [ -z "$BODY" ] || [ ${#BODY} -lt 20 ]; then
+            echo "Please provide a meaningful PR description"
+            exit 1
+          fi
+          echo "PR has a description"
+
+  # Test coverage
+  test-coverage:
+    name: Test with Coverage
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "Tests completed. Check the logs for details." >> $GITHUB_STEP_SUMMARY
+
+  # Summary
+  pr-summary:
+    name: PR Check Summary
+    runs-on: ubuntu-latest
+    needs: [quick-check, pr-metadata, test-coverage]
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## PR Check Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          QC="${{ needs.quick-check.result }}"
+          PM="${{ needs.pr-metadata.result }}"
+          TC="${{ needs.test-coverage.result }}"
+
+          if [[ "$QC" == "success" ]]; then
+            echo "- :white_check_mark: Quick Check passed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "$QC" == "skipped" ]]; then
+            echo "- :next_track_button: Quick Check skipped (draft PR)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- :x: Quick Check failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "$PM" == "success" ]]; then
+            echo "- :white_check_mark: PR Metadata valid" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- :x: PR Metadata issues" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ "$TC" == "success" ]]; then
+            echo "- :white_check_mark: Tests passed" >> $GITHUB_STEP_SUMMARY
+          elif [[ "$TC" == "skipped" ]]; then
+            echo "- :next_track_button: Tests skipped (draft PR)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- :x: Tests failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Check overall status
+        run: |
+          QC="${{ needs.quick-check.result }}"
+          TC="${{ needs.test-coverage.result }}"
+          if [[ "$QC" != "success" && "$QC" != "skipped" ]] || \
+             [[ "$TC" != "success" && "$TC" != "skipped" ]]; then
+            echo "Some checks failed. Please fix the issues before merging."
+            exit 1
+          fi
+          echo "All PR checks passed!"
