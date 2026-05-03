@@ -74,7 +74,8 @@ pick_install_dir() {
 main() {
     need curl
     need tar
-    need sha256sum 2>/dev/null || need shasum   # macOS uses shasum
+    command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
+        || die "Neither 'sha256sum' nor 'shasum' is installed."
 
     OS="$(detect_os)"
     ARCH="$(detect_arch)"
