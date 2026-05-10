@@ -10,8 +10,8 @@ use axiomvault_crypto::recovery::RecoveryKey;
 use axiomvault_crypto::KdfParams;
 use axiomvault_storage::gdrive::{AuthConfig, AuthManager, GDriveConfig, Tokens};
 use axiomvault_storage::{
-    create_default_registry, CompositeConfig, CompositeStorageProvider, HealthStatus, RaidMode,
-    RaidRebuilder, RebuildConfig, RebuildResult,
+    create_default_registry, CloudAuthorization, CompositeConfig, CompositeStorageProvider,
+    HealthStatus, RaidMode, RaidRebuilder, RebuildConfig, RebuildResult,
 };
 use axiomvault_sync::{ConflictStrategy, SyncConfig, SyncEngine, SyncMode, SyncState};
 use axiomvault_vault::{
@@ -43,14 +43,9 @@ pub(crate) async fn cmd_gdrive_auth(
             )
         })?;
 
-    let client_secret = client_secret
-        .or_else(|| std::env::var("AXIOMVAULT_GOOGLE_CLIENT_SECRET").ok())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Google OAuth2 client secret not provided. \
-                 Use --client-secret or set AXIOMVAULT_GOOGLE_CLIENT_SECRET"
-            )
-        })?;
+    // PKCE makes client_secret optional for public clients.
+    let client_secret =
+        client_secret.or_else(|| std::env::var("AXIOMVAULT_GOOGLE_CLIENT_SECRET").ok());
 
     let auth_config = AuthConfig {
         client_id,
@@ -60,7 +55,11 @@ pub(crate) async fn cmd_gdrive_auth(
 
     let auth_manager = AuthManager::new(auth_config).context("Failed to create auth manager")?;
 
-    let (auth_url, csrf_token) = auth_manager.authorization_url();
+    let CloudAuthorization {
+        url: auth_url,
+        csrf_token,
+        pkce_verifier,
+    } = auth_manager.authorization_url();
 
     // Start local HTTP server to capture the OAuth callback
     let listener = TcpListener::bind("127.0.0.1:8080").await.context(
@@ -166,7 +165,7 @@ pub(crate) async fn cmd_gdrive_auth(
     println!("Authorization received! Exchanging for access tokens...");
 
     let tokens = auth_manager
-        .exchange_code(&auth_code)
+        .exchange_code(&auth_code, pkce_verifier)
         .await
         .context("Failed to exchange authorization code")?;
 
