@@ -54,7 +54,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
-rpassword = "7.0"
+rpassword = "7.5"
 open = "5.3"
 url = "2.5"
 zeroize = { version = "1.7", features = ["derive"] }
