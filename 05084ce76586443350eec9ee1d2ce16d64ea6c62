@@ -1,0 +1,13 @@
+problem: macOS CI restored cached ~/.cargo/bin entries causing cargo to invoke rustup-init
+approach: Removed ~/.cargo/bin from actions/cache paths and disabled binary caching for release rust-cache jobs
+failed_paths:
+  - FUSE implementation itself passed local checks; failure was CI environment cache poisoning
+verification:
+  - gh run view logs showed rustup-init handling cargo build
+  - grep confirmed no ~/.cargo/bin workflow cache entries remain
+workflow_learning: Do not cache Rust toolchain shim directories; cache registries/git db/target only
+related_files:
+  - .github/workflows/rust-ci.yml
+  - .github/workflows/pr-check.yml
+  - .github/workflows/release-beta-on-push.yml
+  - .github/workflows/release.yml
