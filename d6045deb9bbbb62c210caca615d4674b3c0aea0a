@@ -1,0 +1,13 @@
+problem: macOS CI restored stale cached cargo shims causing cargo to invoke rustup-init
+approach: Bumped workflow cache keys/prefixes to avoid restoring poisoned ~/.cargo/bin caches while preserving existing valid workflow syntax
+failed_paths:
+  - Removing ~/.cargo/bin entries exposed workflow formatting fragility and made workflows invalid
+verification:
+  - PyYAML parsed all workflow files locally
+  - Prior CI logs showed rustup-init handling cargo build from stale cache
+workflow_learning: For fragile workflow YAML, prefer low-risk cache-key busts over structural rewrites unless fully reformatting the file
+related_files:
+  - .github/workflows/rust-ci.yml
+  - .github/workflows/pr-check.yml
+  - .github/workflows/release-beta-on-push.yml
+  - .github/workflows/release.yml
