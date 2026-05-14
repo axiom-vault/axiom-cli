@@ -89,6 +89,9 @@ yay -S axiomvault-bin
 ```bash
 # Requires Rust stable. The git dependency on axiom-core is not yet on crates.io.
 cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli
+
+# Optional FUSE mount support (requires libfuse3-dev on Linux or macFUSE on macOS)
+cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli --features fuse
 ```
 
 ## Build from Source
@@ -120,6 +123,10 @@ axiomvault extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.
 
 # Interactive session
 axiomvault open --path ~/my-vault
+
+# Mount as a filesystem (when built with --features fuse)
+mkdir -p ~/my-vault-mount
+axiomvault mount --path ~/my-vault ~/my-vault-mount
 ```
 
 ### Google Drive
@@ -165,6 +172,7 @@ axiomvault sync-configure --vault-path ~/my-vault --mode periodic --interval 300
 | `sync` | Synchronize vault with remote |
 | `sync-status` | Show sync status |
 | `sync-configure` | Configure sync behavior |
+| `mount` | Mount vault as a FUSE filesystem (requires `--features fuse`) |
 
 **KDF strength levels:**
 

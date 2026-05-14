@@ -37,6 +37,10 @@ assets = [
     { source = "README.md", dest = "/usr/share/doc/axiomvault/README.md", mode = "0644" },
 ]
 
+[features]
+default = []
+fuse = ["dep:axiomvault-fuse", "axiomvault-fuse/fuse"]
+
 [dependencies]
 axiomvault-common = { git = "https://github.com/axiom-vault/axiom-core" }
 axiomvault-crypto = { git = "https://github.com/axiom-vault/axiom-core" }
@@ -44,7 +48,7 @@ axiomvault-storage = { git = "https://github.com/axiom-vault/axiom-core" }
 axiomvault-vault = { git = "https://github.com/axiom-vault/axiom-core" }
 axiomvault-sync = { git = "https://github.com/axiom-vault/axiom-core" }
 axiomvault-webdav = { git = "https://github.com/axiom-vault/axiom-core" }
-
+axiomvault-fuse = { git = "https://github.com/axiom-vault/axiom-core", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.6", features = ["derive"] }

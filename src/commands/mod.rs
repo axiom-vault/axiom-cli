@@ -1,4 +1,6 @@
 pub(crate) mod check;
+#[cfg(feature = "fuse")]
+pub(crate) mod fuse;
 pub(crate) mod gdrive;
 pub(crate) mod migrate;
 pub(crate) mod raid;
