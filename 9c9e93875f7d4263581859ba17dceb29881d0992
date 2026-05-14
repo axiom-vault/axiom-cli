@@ -1,0 +1,17 @@
+problem: FUSE core existed but axiom-cli lacked a mount command and optional dependency
+approach: Added optional axiomvault-fuse dependency/feature, mount subcommand, dispatch handler, docs, and verified default/fuse builds
+failed_paths:
+  - Initial targeted edits failed due unusual source formatting; rewrote small CLI/dispatch modules and ran rustfmt
+verification:
+  - cargo check -q
+  - cargo check -q --features fuse
+  - cargo test -q
+  - cargo test -q --features fuse
+  - cargo run -q --features fuse -- mount --help
+workflow_learning: When feature-gating CLI subcommands, gate enum variant, module, and dispatch arm together so default builds avoid optional deps
+related_files:
+  - Cargo.toml
+  - src/commands/fuse.rs
+  - src/cli.rs
+  - src/dispatch.rs
+  - README.md
