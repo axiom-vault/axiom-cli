@@ -9,19 +9,19 @@ pub(crate) fn install_completions(shell: Shell) -> Result<()> {
     let (dir, filename) = match shell {
         Shell::Zsh => {
             let dir = PathBuf::from(&home).join(".zsh/completions");
-            (dir, "_axiomvault".to_string())
+            (dir, "_axiom".to_string())
         }
         Shell::Bash => {
             let dir = PathBuf::from(&home).join(".local/share/bash-completion/completions");
-            (dir, "axiomvault".to_string())
+            (dir, "axiom".to_string())
         }
         Shell::Fish => {
             let dir = PathBuf::from(&home).join(".config/fish/completions");
-            (dir, "axiomvault.fish".to_string())
+            (dir, "axiom.fish".to_string())
         }
         _ => {
             anyhow::bail!(
-                "Automatic installation not supported for {:?}. Use `axiomvault completions {:?}` and redirect to a file.",
+                "Automatic installation not supported for {:?}. Use `axiom completions {:?}` and redirect to a file.",
                 shell,
                 shell,
             );
@@ -33,7 +33,7 @@ pub(crate) fn install_completions(shell: Shell) -> Result<()> {
     let dest = dir.join(&filename);
     let mut file = std::fs::File::create(&dest)
         .with_context(|| format!("Failed to create {}", dest.display()))?;
-    clap_complete::generate(shell, &mut Cli::command(), "axiomvault", &mut file);
+    clap_complete::generate(shell, &mut Cli::command(), "axiom", &mut file);
 
     println!("Completions installed to {}", dest.display());
 

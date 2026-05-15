@@ -7,7 +7,7 @@
 set -euo pipefail
 
 REPO="axiom-vault/axiom-cli"
-BIN_NAME="axiomvault"
+BIN_NAME="axiom"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases"
 INCLUDE_PRERELEASES=0
 INSTALL_DIR_OVERRIDE=""
@@ -249,10 +249,10 @@ update_zsh_profile() {
     fi
 
     {
-        printf '\n# >>> axiomvault completions >>>\n'
+        printf '\n# >>> axiom completions >>>\n'
         [ "${has_fpath}" -eq 1 ] || printf '%s\n' "${fpath_line}"
         [ "${has_compinit}" -eq 1 ] || printf '%s\n' "${compinit_line}"
-        printf '# <<< axiomvault completions <<<\n'
+        printf '# <<< axiom completions <<<\n'
     } >> "${profile}"
 
     note "Updated ${profile} for zsh completions. Restart zsh or run: exec zsh"

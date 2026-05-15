@@ -47,7 +47,7 @@ pub(crate) enum RaidModeArg {
 }
 
 #[derive(Parser)]
-#[command(name = "axiomvault")]
+#[command(name = "axiom")]
 #[command(about = "AxiomVault - Encrypted vault management")]
 #[command(version = option_env!("AXIOMVAULT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")))]
 pub(crate) struct Cli {
@@ -441,13 +441,7 @@ mod tests {
     #[test]
     fn parses_grouped_vault_create_command() {
         let cli = Cli::try_parse_from([
-            "axiomvault",
-            "vault",
-            "create",
-            "--name",
-            "MyVault",
-            "--path",
-            "./vault",
+            "axiom", "vault", "create", "--name", "MyVault", "--path", "./vault",
         ])
         .expect("vault create should parse");
 
@@ -465,7 +459,7 @@ mod tests {
     #[test]
     fn parses_grouped_remote_gdrive_auth_command() {
         let cli = Cli::try_parse_from([
-            "axiomvault",
+            "axiom",
             "remote",
             "gdrive",
             "auth",
@@ -488,13 +482,7 @@ mod tests {
     #[test]
     fn parses_grouped_mount_webdav_command() {
         let cli = Cli::try_parse_from([
-            "axiomvault",
-            "mount",
-            "webdav",
-            "--path",
-            "./vault",
-            "--port",
-            "9090",
+            "axiom", "mount", "webdav", "--path", "./vault", "--port", "9090",
         ])
         .expect("mount webdav should parse");
 

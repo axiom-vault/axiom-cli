@@ -153,7 +153,7 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                 clap_complete::generate(
                     shell,
                     &mut Cli::command(),
-                    "axiomvault",
+                    "axiom",
                     &mut std::io::stdout(),
                 );
             }
