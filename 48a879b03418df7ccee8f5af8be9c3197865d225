@@ -1,0 +1,16 @@
+problem: Finish incomplete CLI rename for release artifacts and installer-facing packaging outputs
+approach: Audited remaining axiomvault references, kept crate/config names, and updated release workflow artifact names plus Homebrew URLs/checksums to axiom
+failed_paths:
+  - None
+verification:
+  - cargo fmt --all
+  - cargo test --locked
+  - cargo run -- --help
+  - cargo run -- completions bash
+  - cargo run -- completions zsh
+  - cargo run -- completions fish
+  - grep audit for stale workflow artifact references
+workflow_learning: For CLI rename work, audit CI packaging, artifact upload/download patterns, and generated package manager formula URLs after binary renames
+related_files:
+  - .github/workflows/release.yml
+  - .github/workflows/release-beta-on-push.yml
