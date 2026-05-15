@@ -35,17 +35,19 @@ pub(crate) async fn cmd_gdrive_auth(
 
     // Build auth config: CLI flags take precedence over environment variables.
     let client_id = client_id
+        .or_else(|| std::env::var("AXIOM_GOOGLE_CLIENT_ID").ok())
         .or_else(|| std::env::var("AXIOMVAULT_GOOGLE_CLIENT_ID").ok())
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Google OAuth2 client ID not provided. \
-                 Use --client-id or set AXIOMVAULT_GOOGLE_CLIENT_ID"
+                 Use --client-id or set AXIOM_GOOGLE_CLIENT_ID (legacy: AXIOMVAULT_GOOGLE_CLIENT_ID)"
             )
         })?;
 
     // PKCE makes client_secret optional for public clients.
-    let client_secret =
-        client_secret.or_else(|| std::env::var("AXIOMVAULT_GOOGLE_CLIENT_SECRET").ok());
+    let client_secret = client_secret
+        .or_else(|| std::env::var("AXIOM_GOOGLE_CLIENT_SECRET").ok())
+        .or_else(|| std::env::var("AXIOMVAULT_GOOGLE_CLIENT_SECRET").ok());
 
     let auth_config = AuthConfig {
         client_id,

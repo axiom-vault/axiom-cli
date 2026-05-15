@@ -201,7 +201,7 @@ jobs:
       - name: Build release
         shell: bash
         env:
-          AXIOMVAULT_VERSION: ${{ needs.validate.outputs.tag }}
+          AXIOM_VERSION: ${{ needs.validate.outputs.tag }}
         run: |
           if [ -n "${{ matrix.linker_env || '' }}" ] && [ -n "${{ matrix.linker || '' }}" ]; then
             export "${{ matrix.linker_env }}=${{ matrix.linker }}"
