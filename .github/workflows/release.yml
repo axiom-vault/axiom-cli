@@ -211,14 +211,14 @@ jobs:
       - name: Package binary (tarball)
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../axiomvault-${{ matrix.target }}.tar.gz axiomvault
+          tar czf ../../../axiom-${{ matrix.target }}.tar.gz axiom
 
       - name: Build Debian package (.deb)
         if: matrix.deb
         run: |
           cargo install cargo-deb --locked
           cargo deb --no-build --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/debian/axiomvault_*.deb \
+          cp target/${{ matrix.target }}/debian/axiom_*.deb \
              axiomvault-${{ matrix.target }}.deb
 
       - name: Build RPM package (.rpm)
@@ -226,12 +226,12 @@ jobs:
         run: |
           cargo install cargo-generate-rpm --locked
           cargo generate-rpm --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/generate-rpm/axiomvault-*.rpm \
+          cp target/${{ matrix.target }}/generate-rpm/axiom-*.rpm \
              axiomvault-${{ matrix.target }}.rpm
 
       - uses: actions/upload-artifact@v7
         with:
-          name: axiomvault-${{ matrix.target }}
+          name: axiom-${{ matrix.target }}
           path: |
             axiomvault-${{ matrix.target }}.tar.gz
             axiomvault-${{ matrix.target }}.deb
@@ -248,7 +248,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: axiomvault-*
+          pattern: axiom-*
           path: artifacts
 
       - name: Generate checksums
@@ -278,7 +278,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "axiomvault $TAG"
+          git tag -a "$TAG" -m "axiom $TAG"
           git push origin "$TAG"
 
       - name: Create GitHub Release
@@ -329,8 +329,8 @@ jobs:
           VERSION="${TAG#v}"
 
           mkdir -p homebrew-tap/Formula
-          cat > homebrew-tap/Formula/axiomvault.rb <<FORMULA_EOF
-          class Axiomvault < Formula
+          cat > homebrew-tap/Formula/axiom.rb <<FORMULA_EOF
+          class Axiom < Formula
             desc "Command-line interface for AxiomVault encrypted vault"
             homepage "https://github.com/axiom-vault/axiom-cli"
             version "${VERSION}"
@@ -361,19 +361,19 @@ jobs:
             end
 
             def install
-              bin.install "axiomvault"
+              bin.install "axiom"
             end
 
             test do
-              system "#{bin}/axiomvault", "--version"
+              system "#{bin}/axiom", "--version"
             end
           end
           FORMULA_EOF
 
           cd homebrew-tap
-          ruby -c Formula/axiomvault.rb
+          ruby -c Formula/axiom.rb
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/axiomvault.rb
-          git diff --cached --quiet || git commit -m "axiomvault ${TAG}"
+          git add Formula/axiom.rb
+          git diff --cached --quiet || git commit -m "axiom ${TAG}"
           git push

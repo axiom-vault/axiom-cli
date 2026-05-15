@@ -18,7 +18,7 @@
 
 ## Overview
 
-`axiomvault` is the command-line client for [AxiomVault](https://github.com/axiom-vault/axiom-core). It encrypts your files locally before they touch any cloud service, powered by the Rust core library.
+`axiom` is the command-line client for [AxiomVault](https://github.com/axiom-vault/axiom-core). It encrypts your files locally before they touch any cloud service, powered by the Rust core library.
 
 **Core library:** [axiom-vault/axiom-core](https://github.com/axiom-vault/axiom-core)
 
@@ -38,41 +38,41 @@ Download the right tarball from [Releases](https://github.com/axiom-vault/axiom-
 
 | Platform | Asset |
 |----------|-------|
-| Linux x86_64 | `axiomvault-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux arm64 | `axiomvault-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS x86_64 | `axiomvault-x86_64-apple-darwin.tar.gz` |
-| macOS arm64 (M-series) | `axiomvault-aarch64-apple-darwin.tar.gz` |
+| Linux x86_64 | `axiom-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `axiom-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS x86_64 | `axiom-x86_64-apple-darwin.tar.gz` |
+| macOS arm64 (M-series) | `axiom-aarch64-apple-darwin.tar.gz` |
 
 Each release also ships a `SHA256SUMS` file.
 
 Example for Linux x86_64:
 
 ```bash
-curl -L https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiomvault-x86_64-unknown-linux-gnu.tar.gz | tar xz
-sudo mv axiomvault /usr/local/bin/
+curl -L https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv axiom /usr/local/bin/
 ```
 
 ### Debian / Ubuntu (.deb)
 
 ```bash
 # Download and install the .deb for x86_64
-curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiomvault-x86_64-unknown-linux-gnu.deb
-sudo dpkg -i axiomvault-x86_64-unknown-linux-gnu.deb
+curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.deb
+sudo dpkg -i axiom-x86_64-unknown-linux-gnu.deb
 ```
 
 ### RPM-based (Fedora, RHEL, openSUSE)
 
 ```bash
 # Download and install the .rpm for x86_64
-curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiomvault-x86_64-unknown-linux-gnu.rpm
-sudo rpm -i axiomvault-x86_64-unknown-linux-gnu.rpm
+curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.rpm
+sudo rpm -i axiom-x86_64-unknown-linux-gnu.rpm
 ```
 
 ### Homebrew (macOS & Linux)
 
 ```bash
 brew tap axiom-vault/tap
-brew install axiomvault
+brew install axiom
 ```
 
 The Homebrew formula is published from the [`axiom-vault/homebrew-tap`](https://github.com/axiom-vault/homebrew-tap) repository after each stable release.
@@ -81,19 +81,19 @@ The Homebrew formula is published from the [`axiom-vault/homebrew-tap`](https://
 
 ```bash
 # Using an AUR helper such as yay:
-yay -S axiomvault-bin
+yay -S axiom-bin
 ```
 
-> **Note:** An AUR package (`axiomvault-bin`) is planned. Track progress in the GitHub Issues.
+> **Note:** An AUR package (`axiom-bin`) is planned. Track progress in the GitHub Issues.
 
 ### From source (cargo)
 
 ```bash
 # Requires Rust stable. The git dependency on axiom-core is not yet on crates.io.
-cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli
+cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli --bin axiom
 
 # Optional FUSE mount support (requires libfuse3-dev on Linux or macFUSE on macOS)
-cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli --features fuse
+cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli --bin axiom --features fuse
 ```
 
 ## Build from Source
@@ -106,53 +106,53 @@ cd axiom-cli
 cargo build --release
 ```
 
-The binary is produced at `target/release/axiomvault`.
+The binary is produced at `target/release/axiom`.
 
 ## Usage
 
 ```bash
 # Create a vault
-axiomvault vault create --name MyVault --path ~/my-vault
+axiom vault create --name MyVault --path ~/my-vault
 
 # Add files
-axiomvault file add --vault-path ~/my-vault --source ~/secret.pdf --dest /secret.pdf
+axiom file add --vault-path ~/my-vault --source ~/secret.pdf --dest /secret.pdf
 
 # List contents
-axiomvault file list --vault-path ~/my-vault
+axiom file list --vault-path ~/my-vault
 
 # Extract files
-axiomvault file extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.pdf
+axiom file extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.pdf
 
 # Interactive session
-axiomvault vault open --path ~/my-vault
+axiom vault open --path ~/my-vault
 
 # Mount as a filesystem (when built with --features fuse)
 mkdir -p ~/my-vault-mount
-axiomvault mount fuse --path ~/my-vault ~/my-vault-mount
+axiom mount fuse --path ~/my-vault ~/my-vault-mount
 ```
 
 ### Google Drive
 
 ```bash
 # Authenticate (opens browser)
-axiomvault remote gdrive auth --output ~/gdrive-tokens.json
+axiom remote gdrive auth --output ~/gdrive-tokens.json
 
 # Create vault on Drive
-axiomvault remote gdrive create --name CloudVault \
+axiom remote gdrive create --name CloudVault \
   --folder-id YOUR_FOLDER_ID \
   --tokens ~/gdrive-tokens.json
 
 # Open cloud vault
-axiomvault remote gdrive open --folder-id YOUR_FOLDER_ID \
+axiom remote gdrive open --folder-id YOUR_FOLDER_ID \
   --tokens ~/gdrive-tokens.json
 ```
 
 ### Sync
 
 ```bash
-axiomvault sync run --vault-path ~/my-vault --strategy keep-both
-axiomvault sync status --vault-path ~/my-vault
-axiomvault sync configure --vault-path ~/my-vault --mode periodic --interval 300
+axiom sync run --vault-path ~/my-vault --strategy keep-both
+axiom sync status --vault-path ~/my-vault
+axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 ```
 
 ## CLI Reference
