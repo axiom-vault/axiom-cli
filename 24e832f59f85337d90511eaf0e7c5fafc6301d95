@@ -1,0 +1,19 @@
+problem: Finalize axiom-cli hardening after executable rename and grouped command refactor
+approach: Added new+legacy env var compatibility for version/password/Google OAuth paths, rejected zero-second sync intervals, and added regression tests plus release workflow env updates
+failed_paths:
+  - None
+verification:
+  - cargo test
+  - cargo fmt --check
+  - git diff --check
+  - cargo run -- --help
+  - cargo run -- completions bash
+workflow_learning: Rename hardening should preserve legacy env vars temporarily and add regression tests for boundary inputs and compatibility fallbacks
+related_files:
+  - build.rs
+  - src/cli.rs
+  - src/commands/gdrive.rs
+  - src/conversions.rs
+  - src/password.rs
+  - .github/workflows/release.yml
+  - .github/workflows/release-beta-on-push.yml
