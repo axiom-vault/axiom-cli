@@ -1,0 +1,10 @@
+problem: Google Drive OAuth token file was created with default permissions before chmod hardening
+approach: Created the token file atomically with O_CREAT|O_EXCL and mode 0600 before writing token contents
+failed_paths:
+  - Did not rely on post-write chmod because OAuth refresh tokens could be exposed during the creation window
+verification:
+  - cargo test
+  - user-reported successful YubiKey-backed e2e test
+workflow_learning: For credential persistence, verify the open/create call itself enforces private permissions rather than repairing permissions afterward
+related_files:
+  - src/commands/gdrive.rs
