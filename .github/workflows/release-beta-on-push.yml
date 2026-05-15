@@ -189,31 +189,31 @@ jobs:
       - name: Package binary (tarball)
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../axiomvault-${{ matrix.target }}.tar.gz axiomvault
+          tar czf ../../../axiom-${{ matrix.target }}.tar.gz axiom
 
       - name: Build Debian package (.deb)
         if: matrix.deb
         run: |
           cargo install cargo-deb --locked
           cargo deb --no-build --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/debian/axiomvault_*.deb \
-             axiomvault-${{ matrix.target }}.deb
+          cp target/${{ matrix.target }}/debian/axiom_*.deb \
+             axiom-${{ matrix.target }}.deb
 
       - name: Build RPM package (.rpm)
         if: matrix.rpm
         run: |
           cargo install cargo-generate-rpm --locked
           cargo generate-rpm --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/generate-rpm/axiomvault-*.rpm \
-             axiomvault-${{ matrix.target }}.rpm
+          cp target/${{ matrix.target }}/generate-rpm/axiom-*.rpm \
+             axiom-${{ matrix.target }}.rpm
 
       - uses: actions/upload-artifact@v7
         with:
-          name: axiomvault-${{ matrix.target }}
+          name: axiom-${{ matrix.target }}
           path: |
-            axiomvault-${{ matrix.target }}.tar.gz
-            axiomvault-${{ matrix.target }}.deb
-            axiomvault-${{ matrix.target }}.rpm
+            axiom-${{ matrix.target }}.tar.gz
+            axiom-${{ matrix.target }}.deb
+            axiom-${{ matrix.target }}.rpm
           if-no-files-found: ignore
           retention-days: 7
 
@@ -226,7 +226,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          pattern: axiomvault-*
+          pattern: axiom-*
           path: artifacts
 
       - name: Generate checksums

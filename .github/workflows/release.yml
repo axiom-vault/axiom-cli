@@ -219,7 +219,7 @@ jobs:
           cargo install cargo-deb --locked
           cargo deb --no-build --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/debian/axiom_*.deb \
-             axiomvault-${{ matrix.target }}.deb
+             axiom-${{ matrix.target }}.deb
 
       - name: Build RPM package (.rpm)
         if: matrix.rpm
@@ -227,15 +227,15 @@ jobs:
           cargo install cargo-generate-rpm --locked
           cargo generate-rpm --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/generate-rpm/axiom-*.rpm \
-             axiomvault-${{ matrix.target }}.rpm
+             axiom-${{ matrix.target }}.rpm
 
       - uses: actions/upload-artifact@v7
         with:
           name: axiom-${{ matrix.target }}
           path: |
-            axiomvault-${{ matrix.target }}.tar.gz
-            axiomvault-${{ matrix.target }}.deb
-            axiomvault-${{ matrix.target }}.rpm
+            axiom-${{ matrix.target }}.tar.gz
+            axiom-${{ matrix.target }}.deb
+            axiom-${{ matrix.target }}.rpm
           if-no-files-found: ignore
           retention-days: 14
 
@@ -322,10 +322,10 @@ jobs:
 
           get_sha() { grep "$1" "$SHA256SUMS_FILE" | awk '{print $1}'; }
 
-          SHA_AARCH64_DARWIN="$(get_sha 'axiomvault-aarch64-apple-darwin.tar.gz')"
-          SHA_X86_64_DARWIN="$(get_sha 'axiomvault-x86_64-apple-darwin.tar.gz')"
-          SHA_AARCH64_LINUX="$(get_sha 'axiomvault-aarch64-unknown-linux-gnu.tar.gz')"
-          SHA_X86_64_LINUX="$(get_sha 'axiomvault-x86_64-unknown-linux-gnu.tar.gz')"
+          SHA_AARCH64_DARWIN="$(get_sha 'axiom-aarch64-apple-darwin.tar.gz')"
+          SHA_X86_64_DARWIN="$(get_sha 'axiom-x86_64-apple-darwin.tar.gz')"
+          SHA_AARCH64_LINUX="$(get_sha 'axiom-aarch64-unknown-linux-gnu.tar.gz')"
+          SHA_X86_64_LINUX="$(get_sha 'axiom-x86_64-unknown-linux-gnu.tar.gz')"
           VERSION="${TAG#v}"
 
           mkdir -p homebrew-tap/Formula
@@ -338,24 +338,24 @@ jobs:
 
             on_macos do
               on_arm do
-                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiomvault-aarch64-apple-darwin.tar.gz"
+                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiom-aarch64-apple-darwin.tar.gz"
                 sha256 "${SHA_AARCH64_DARWIN}"
               end
 
               on_intel do
-                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiomvault-x86_64-apple-darwin.tar.gz"
+                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiom-x86_64-apple-darwin.tar.gz"
                 sha256 "${SHA_X86_64_DARWIN}"
               end
             end
 
             on_linux do
               on_arm do
-                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiomvault-aarch64-unknown-linux-gnu.tar.gz"
+                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiom-aarch64-unknown-linux-gnu.tar.gz"
                 sha256 "${SHA_AARCH64_LINUX}"
               end
 
               on_intel do
-                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiomvault-x86_64-unknown-linux-gnu.tar.gz"
+                url "https://github.com/axiom-vault/axiom-cli/releases/download/v#{version}/axiom-x86_64-unknown-linux-gnu.tar.gz"
                 sha256 "${SHA_X86_64_LINUX}"
               end
             end
