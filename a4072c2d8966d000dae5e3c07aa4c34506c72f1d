@@ -1,0 +1,16 @@
+problem: RPM packaging failed in release workflows because cargo-generate-rpm was fed a non-target-aware binary asset path and the workflows assumed a fixed output path
+approach: Switched RPM metadata to a stable staging asset path (dist/axiom), copied the target-specific release binary there before cargo generate-rpm, and made both release workflows discover the generated .rpm dynamically before renaming it
+failed_paths:
+  - Tried target/%{_target}/release/axiom in Cargo.toml, but local cargo-generate-rpm rejected it as Asset file not found
+verification:
+  - cargo fmt --check
+  - cargo test
+  - git diff --check
+  - cargo build --release --locked --target x86_64-unknown-linux-gnu
+  - cargo generate-rpm --target x86_64-unknown-linux-gnu
+  - find target -type f -path '*/generate-rpm/*.rpm' | sort
+workflow_learning: When cargo-generate-rpm cannot interpolate the Rust target in asset metadata, stage the built binary into a stable path and make CI discover the produced rpm instead of assuming a fixed filename
+related_files:
+  - Cargo.toml
+  - .github/workflows/release-beta-on-push.yml
+  - .github/workflows/release.yml
