@@ -1,0 +1,16 @@
+problem: Finish leftover CLI rename changes after switching binary name to axiom
+approach: Audited dirty files, confirmed all edits were user-facing command/completion/install references, ran cargo test and cargo fmt --check, then committed and pushed
+failed_paths:
+  - None
+verification:
+  - cargo test
+  - cargo fmt --check
+  - git diff --check
+workflow_learning: After rename commits, grep user-facing strings and completion/install paths to catch leftover binary-name references
+related_files:
+  - install.sh
+  - src/cli.rs
+  - src/commands/gdrive.rs
+  - src/commands/sync.rs
+  - src/completions.rs
+  - src/dispatch.rs
