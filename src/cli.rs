@@ -61,6 +61,59 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// Vault lifecycle and maintenance commands.
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommands,
+    },
+    /// File and directory operations inside a vault.
+    File {
+        #[command(subcommand)]
+        command: FileCommands,
+    },
+    /// Password management commands.
+    Password {
+        #[command(subcommand)]
+        command: PasswordCommands,
+    },
+    /// Recovery key commands.
+    Recovery {
+        #[command(subcommand)]
+        command: RecoveryCommands,
+    },
+    /// Remote provider commands.
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommands,
+    },
+    /// Vault synchronisation commands.
+    Sync {
+        #[command(subcommand)]
+        command: SyncCommands,
+    },
+    /// RAID backend and redundancy commands.
+    Raid {
+        #[command(subcommand)]
+        command: RaidCommands,
+    },
+    /// Mount the vault through supported access methods.
+    Mount {
+        #[command(subcommand)]
+        command: MountCommands,
+    },
+    /// Generate shell completions.
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: Shell,
+        /// Install completions to the standard location for the shell.
+        #[arg(long)]
+        install: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum VaultCommands {
     /// Create a new vault.
     Create {
         /// Vault name/identifier.
@@ -79,6 +132,34 @@ pub(crate) enum Commands {
         #[arg(short, long)]
         path: PathBuf,
     },
+    /// Show vault information.
+    Info {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+    },
+    /// Check vault health and integrity.
+    Check {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+        /// Run shallow check only (no password required).
+        #[arg(long)]
+        shallow: bool,
+    },
+    /// Migrate vault to the latest format version.
+    Migrate {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+        /// Only show what migrations would run, without executing them.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum FileCommands {
     /// List contents of a vault directory.
     List {
         /// Path to the vault.
@@ -130,47 +211,57 @@ pub(crate) enum Commands {
         #[arg(short = 'f', long)]
         file: String,
     },
-    /// Show vault information.
-    Info {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
-    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PasswordCommands {
     /// Change vault password.
-    ChangePassword {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
-    },
-    /// Show recovery key for a vault (requires password).
-    ShowRecoveryKey {
+    Change {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
     },
     /// Reset vault password using recovery key words.
-    ResetPassword {
+    Reset {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RecoveryCommands {
+    /// Show recovery key for a vault (requires password).
+    ShowKey {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
     },
     /// Migrate a legacy vault to support recovery keys.
-    MigrateVault {
+    Enable {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Check vault health and integrity.
-    Check {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
-        /// Run shallow check only (no password required).
-        #[arg(long)]
-        shallow: bool,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RemoteCommands {
+    /// Google Drive remote commands.
+    Gdrive {
+        #[command(subcommand)]
+        command: GdriveCommands,
     },
+    /// iCloud remote support (coming soon).
+    Icloud,
+    /// Dropbox remote support (coming soon).
+    Dropbox,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum GdriveCommands {
     /// Authenticate with Google Drive and get tokens.
-    GdriveAuth {
+    Auth {
         /// Optional custom client ID.
         #[arg(long)]
         client_id: Option<String>,
@@ -182,7 +273,7 @@ pub(crate) enum Commands {
         output: PathBuf,
     },
     /// Create a vault on Google Drive.
-    GdriveCreate {
+    Create {
         /// Vault name/identifier.
         #[arg(short, long)]
         name: String,
@@ -197,7 +288,7 @@ pub(crate) enum Commands {
         strength: KdfStrength,
     },
     /// Open a vault on Google Drive.
-    GdriveOpen {
+    Open {
         /// Google Drive folder ID where vault is stored.
         #[arg(short, long)]
         folder_id: String,
@@ -205,8 +296,12 @@ pub(crate) enum Commands {
         #[arg(short, long)]
         tokens: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SyncCommands {
     /// Sync vault with remote storage.
-    Sync {
+    Run {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
@@ -215,19 +310,19 @@ pub(crate) enum Commands {
         strategy: ConflictStrategyArg,
     },
     /// Show sync status for the vault.
-    SyncStatus {
+    Status {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
     },
     /// List sync conflicts.
-    SyncConflicts {
+    Conflicts {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
     },
     /// Resolve a sync conflict for a specific file.
-    SyncResolve {
+    Resolve {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
@@ -239,7 +334,7 @@ pub(crate) enum Commands {
         strategy: ConflictStrategyArg,
     },
     /// Configure sync mode for the vault.
-    SyncConfigure {
+    Configure {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
@@ -250,26 +345,12 @@ pub(crate) enum Commands {
         #[arg(short, long)]
         interval: Option<u64>,
     },
-    /// Migrate vault to the latest format version.
-    Migrate {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
-        /// Only show what migrations would run, without executing them.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Generate shell completions.
-    Completions {
-        /// Shell to generate completions for.
-        #[arg(value_enum)]
-        shell: Shell,
-        /// Install completions to the standard location for the shell.
-        #[arg(long)]
-        install: bool,
-    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RaidCommands {
     /// Add a storage backend to the RAID pool.
-    RaidAddBackend {
+    AddBackend {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
@@ -281,22 +362,22 @@ pub(crate) enum Commands {
         config: String,
     },
     /// Remove a storage backend from the RAID pool.
-    RaidRemoveBackend {
+    RemoveBackend {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
-        /// Index of the backend to remove (shown in raid-status).
+        /// Index of the backend to remove (shown in raid status).
         #[arg(short, long)]
         index: usize,
     },
     /// Show RAID status: mode, backends, health, and shard distribution.
-    RaidStatus {
+    Status {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
     },
     /// Rebuild missing shards on a target backend.
-    RaidRebuild {
+    Rebuild {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
@@ -304,6 +385,25 @@ pub(crate) enum Commands {
         #[arg(short = 't', long)]
         target: Option<usize>,
     },
+    /// Configure or change the RAID mode.
+    Configure {
+        /// Path to the vault.
+        #[arg(short = 'p', long)]
+        vault_path: PathBuf,
+        /// RAID mode.
+        #[arg(long, value_enum)]
+        mode: RaidModeArg,
+        /// Number of data shards (required for erasure mode).
+        #[arg(short = 'k', long)]
+        data_shards: Option<usize>,
+        /// Number of parity shards (required for erasure mode).
+        #[arg(short = 'm', long)]
+        parity_shards: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum MountCommands {
     /// Serve vault contents over WebDAV on the loopback interface.
     Webdav {
         /// Path to the vault.
@@ -315,7 +415,7 @@ pub(crate) enum Commands {
     },
     #[cfg(feature = "fuse")]
     /// Mount vault contents as a FUSE filesystem.
-    Mount {
+    Fuse {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
@@ -332,19 +432,80 @@ pub(crate) enum Commands {
         #[arg(long)]
         no_default_permissions: bool,
     },
-    /// Configure or change the RAID mode.
-    RaidConfigure {
-        /// Path to the vault.
-        #[arg(short = 'p', long)]
-        vault_path: PathBuf,
-        /// RAID mode.
-        #[arg(long, value_enum)]
-        mode: RaidModeArg,
-        /// Number of data shards (required for erasure mode).
-        #[arg(short = 'k', long)]
-        data_shards: Option<usize>,
-        /// Number of parity shards (required for erasure mode).
-        #[arg(short = 'm', long)]
-        parity_shards: Option<usize>,
-    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_grouped_vault_create_command() {
+        let cli = Cli::try_parse_from([
+            "axiomvault",
+            "vault",
+            "create",
+            "--name",
+            "MyVault",
+            "--path",
+            "./vault",
+        ])
+        .expect("vault create should parse");
+
+        match cli.command {
+            Commands::Vault {
+                command: VaultCommands::Create { name, path, .. },
+            } => {
+                assert_eq!(name, "MyVault");
+                assert_eq!(path, PathBuf::from("./vault"));
+            }
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_remote_gdrive_auth_command() {
+        let cli = Cli::try_parse_from([
+            "axiomvault",
+            "remote",
+            "gdrive",
+            "auth",
+            "--output",
+            "tokens.json",
+        ])
+        .expect("remote gdrive auth should parse");
+
+        match cli.command {
+            Commands::Remote {
+                command:
+                    RemoteCommands::Gdrive {
+                        command: GdriveCommands::Auth { output, .. },
+                    },
+            } => assert_eq!(output, PathBuf::from("tokens.json")),
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_mount_webdav_command() {
+        let cli = Cli::try_parse_from([
+            "axiomvault",
+            "mount",
+            "webdav",
+            "--path",
+            "./vault",
+            "--port",
+            "9090",
+        ])
+        .expect("mount webdav should parse");
+
+        match cli.command {
+            Commands::Mount {
+                command: MountCommands::Webdav { path, port },
+            } => {
+                assert_eq!(path, PathBuf::from("./vault"));
+                assert_eq!(port, 9090);
+            }
+            _ => panic!("unexpected command tree"),
+        }
+    }
 }

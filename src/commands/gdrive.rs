@@ -203,7 +203,9 @@ pub(crate) async fn cmd_gdrive_auth(
     println!("  Tokens saved to: {}", output.display());
     println!("  Expires at: {}", tokens.expires_at);
     println!();
-    println!("You can now use 'axiomvault gdrive-create' or 'axiomvault gdrive-open'");
+    println!(
+        "You can now use 'axiomvault remote gdrive create' or 'axiomvault remote gdrive open'"
+    );
 
     Ok(())
 }

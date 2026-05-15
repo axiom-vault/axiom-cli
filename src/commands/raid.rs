@@ -187,7 +187,7 @@ pub(crate) async fn cmd_raid_add_backend(
             Err(e) => {
                 eprintln!(
                     "Warning: cannot form composite yet ({}). \
-                     You may need to run raid-configure after adding enough backends.",
+                     You may need to run 'axiomvault raid configure' after adding enough backends.",
                     e
                 );
             }
@@ -213,7 +213,7 @@ pub(crate) async fn cmd_raid_remove_backend(vault_path: &Path, index: usize) -> 
     info!("Removing backend {} from RAID pool", index);
 
     let mut raid_cfg = load_raid_config(vault_path).await?.ok_or_else(|| {
-        anyhow::anyhow!("No RAID configuration found. Run raid-add-backend first.")
+        anyhow::anyhow!("No RAID configuration found. Run 'axiomvault raid add-backend' first.")
     })?;
 
     if index >= raid_cfg.backends.len() {
@@ -399,7 +399,7 @@ pub(crate) async fn cmd_raid_remove_backend(vault_path: &Path, index: usize) -> 
 /// Show RAID status: mode, backends, health, and shard distribution.
 pub(crate) async fn cmd_raid_status(vault_path: &Path) -> Result<()> {
     let raid_cfg = load_raid_config(vault_path).await?.ok_or_else(|| {
-        anyhow::anyhow!("No RAID configuration found. Run raid-add-backend first.")
+        anyhow::anyhow!("No RAID configuration found. Run 'axiomvault raid add-backend' first.")
     })?;
 
     // Print RAID mode.
@@ -494,7 +494,7 @@ pub(crate) async fn cmd_raid_status(vault_path: &Path) -> Result<()> {
 /// Rebuild missing shards on a target backend.
 pub(crate) async fn cmd_raid_rebuild(vault_path: &Path, target: Option<usize>) -> Result<()> {
     let raid_cfg = load_raid_config(vault_path).await?.ok_or_else(|| {
-        anyhow::anyhow!("No RAID configuration found. Run raid-add-backend first.")
+        anyhow::anyhow!("No RAID configuration found. Run 'axiomvault raid add-backend' first.")
     })?;
 
     if raid_cfg.backends.len() < 2 {
@@ -636,7 +636,7 @@ pub(crate) async fn cmd_raid_configure(
     info!("Configuring RAID mode");
 
     let mut raid_cfg = load_raid_config(vault_path).await?.ok_or_else(|| {
-        anyhow::anyhow!("No RAID configuration found. Run raid-add-backend first.")
+        anyhow::anyhow!("No RAID configuration found. Run 'axiomvault raid add-backend' first.")
     })?;
 
     let mode_config = match mode {

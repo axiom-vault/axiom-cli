@@ -151,7 +151,7 @@ pub(crate) async fn cmd_sync_conflicts(vault_path: &Path) -> Result<()> {
                 println!("    Remote modified: {}", remote_mod);
             }
         }
-        println!("\nUse 'axiomvault sync-resolve' to resolve conflicts.");
+        println!("\nUse 'axiomvault sync resolve' to resolve conflicts.");
     }
 
     Ok(())

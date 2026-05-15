@@ -43,7 +43,9 @@ Download the right tarball from [Releases](https://github.com/axiom-vault/axiom-
 | macOS x86_64 | `axiomvault-x86_64-apple-darwin.tar.gz` |
 | macOS arm64 (M-series) | `axiomvault-aarch64-apple-darwin.tar.gz` |
 
-Each release also ships a `SHA256SUMS` file. Example for Linux x86_64:
+Each release also ships a `SHA256SUMS` file.
+
+Example for Linux x86_64:
 
 ```bash
 curl -L https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiomvault-x86_64-unknown-linux-gnu.tar.gz | tar xz
@@ -110,84 +112,99 @@ The binary is produced at `target/release/axiomvault`.
 
 ```bash
 # Create a vault
-axiomvault create --name MyVault --path ~/my-vault
+axiomvault vault create --name MyVault --path ~/my-vault
 
 # Add files
-axiomvault add --vault-path ~/my-vault --source ~/secret.pdf --dest /secret.pdf
+axiomvault file add --vault-path ~/my-vault --source ~/secret.pdf --dest /secret.pdf
 
 # List contents
-axiomvault list --vault-path ~/my-vault
+axiomvault file list --vault-path ~/my-vault
 
 # Extract files
-axiomvault extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.pdf
+axiomvault file extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.pdf
 
 # Interactive session
-axiomvault open --path ~/my-vault
+axiomvault vault open --path ~/my-vault
 
 # Mount as a filesystem (when built with --features fuse)
 mkdir -p ~/my-vault-mount
-axiomvault mount --path ~/my-vault ~/my-vault-mount
+axiomvault mount fuse --path ~/my-vault ~/my-vault-mount
 ```
 
 ### Google Drive
 
 ```bash
 # Authenticate (opens browser)
-axiomvault gdrive-auth --output ~/gdrive-tokens.json
+axiomvault remote gdrive auth --output ~/gdrive-tokens.json
 
 # Create vault on Drive
-axiomvault gdrive-create --name CloudVault \
-    --folder-id YOUR_FOLDER_ID \
-    --tokens ~/gdrive-tokens.json
+axiomvault remote gdrive create --name CloudVault \
+  --folder-id YOUR_FOLDER_ID \
+  --tokens ~/gdrive-tokens.json
 
 # Open cloud vault
-axiomvault gdrive-open --folder-id YOUR_FOLDER_ID \
-    --tokens ~/gdrive-tokens.json
+axiomvault remote gdrive open --folder-id YOUR_FOLDER_ID \
+  --tokens ~/gdrive-tokens.json
 ```
 
 ### Sync
 
 ```bash
-axiomvault sync --vault-path ~/my-vault --strategy keep-both
-axiomvault sync-status --vault-path ~/my-vault
-axiomvault sync-configure --vault-path ~/my-vault --mode periodic --interval 300
+axiomvault sync run --vault-path ~/my-vault --strategy keep-both
+axiomvault sync status --vault-path ~/my-vault
+axiomvault sync configure --vault-path ~/my-vault --mode periodic --interval 300
 ```
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `create` | Create a new encrypted vault |
-| `open` | Open vault interactively |
-| `info` | Display vault information |
-| `list` | List vault contents |
-| `add` | Add file to vault |
-| `extract` | Extract file from vault |
-| `mkdir` | Create directory in vault |
-| `remove` | Remove file or directory |
-| `change-password` | Change vault password |
-| `gdrive-auth` | Authenticate with Google Drive |
-| `gdrive-create` | Create vault on Google Drive |
-| `gdrive-open` | Open vault from Google Drive |
-| `sync` | Synchronize vault with remote |
-| `sync-status` | Show sync status |
-| `sync-configure` | Configure sync behavior |
-| `mount` | Mount vault as a FUSE filesystem (requires `--features fuse`) |
+| `vault create` | Create a new encrypted vault |
+| `vault open` | Open vault interactively |
+| `vault info` | Display vault information |
+| `vault check` | Check vault health and integrity |
+| `vault migrate` | Migrate vault format |
+| `file list` | List vault contents |
+| `file add` | Add file to vault |
+| `file extract` | Extract file from vault |
+| `file mkdir` | Create directory in vault |
+| `file remove` | Remove file or directory |
+| `password change` | Change vault password |
+| `password reset` | Reset vault password |
+| `recovery show-key` | Show recovery key |
+| `recovery enable` | Enable recovery keys for a legacy vault |
+| `remote gdrive auth` | Authenticate with Google Drive |
+| `remote gdrive create` | Create vault on Google Drive |
+| `remote gdrive open` | Open vault from Google Drive |
+| `remote icloud` | Placeholder for future iCloud remote support |
+| `remote dropbox` | Placeholder for future Dropbox remote support |
+| `sync run` | Synchronize vault with remote |
+| `sync status` | Show sync status |
+| `sync conflicts` | List sync conflicts |
+| `sync resolve` | Resolve a sync conflict |
+| `sync configure` | Configure sync behavior |
+| `raid add-backend` | Add a RAID backend |
+| `raid remove-backend` | Remove a RAID backend |
+| `raid status` | Show RAID status |
+| `raid rebuild` | Rebuild degraded RAID shards |
+| `raid configure` | Configure RAID mode |
+| `mount webdav` | Serve the vault over WebDAV |
+| `mount fuse` | Mount vault as a FUSE filesystem (requires `--features fuse`) |
 
 **KDF strength levels:**
 
-```
---strength interactive   # ~0.5s, mobile-friendly (64 MiB, 3 iterations)
---strength moderate      # ~1s, balanced (default, 32 MiB, 3 iterations)
---strength sensitive     # ~3s, high security (256 MiB, 4 iterations)
+```text
+--strength interactive # ~0.5s, mobile-friendly (64 MiB, 3 iterations)
+--strength moderate    # ~1s, balanced (default, 32 MiB, 3 iterations)
+--strength sensitive   # ~3s, high security (256 MiB, 4 iterations)
 ```
 
 ## Development
 
 ```bash
-cargo fmt --all                    # Format
-cargo clippy -- -D warnings        # Lint
-cargo test                         # Test
+cargo fmt --all      # Format
+cargo clippy -- -D warnings  # Lint
+cargo test           # Test
 ```
 
 ## Contributing
