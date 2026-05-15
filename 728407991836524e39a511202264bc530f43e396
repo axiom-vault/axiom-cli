@@ -1,0 +1,11 @@
+problem: Add source-install support to install.sh while preserving release-download behavior
+approach: Rewrote the installer for clarity, added --from-source plus repo auto-detection, and verified syntax/help plus a default in-repo source install to a temp dir
+failed_paths:
+  - None
+verification:
+  - bash -n install.sh
+  - ./install.sh --help
+  - ./install.sh --dir "$(mktemp -d)"
+workflow_learning: For shell installers with dual local/remote behavior, detect the local checkout from script location and git metadata before changing defaults
+related_files:
+  - install.sh
