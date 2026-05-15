@@ -1,0 +1,11 @@
+problem: Add a Justfile for common development tasks
+approach: Added a top-level Justfile with recipes for formatting, linting, testing, building, installing, and docs so common workflows are easier to run
+failed_paths:
+  - None
+verification:
+  - just --list
+  - cargo fmt --check
+  - cargo test
+workflow_learning: For ergonomic developer workflow additions, verify both the task runner entrypoints and the underlying Rust checks before shipping
+related_files:
+  - Justfile
