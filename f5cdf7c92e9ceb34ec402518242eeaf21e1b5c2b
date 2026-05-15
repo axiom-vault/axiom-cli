@@ -1,0 +1,17 @@
+problem: Reorganize axiom-cli into grouped command namespaces
+approach: Replaced flat clap subcommands with nested namespace enums, updated dispatch routing and user-facing command strings, and rewrote README examples/reference to match the new tree
+failed_paths:
+  - README targeted block edits failed due formatting drift, so rewrote the file cleanly
+verification:
+  - cargo fmt --all
+  - cargo test
+  - cargo run -- --help
+  - cargo run -- completions bash | head -n 20
+workflow_learning: For large clap tree refactors, rewrite the command enum and dispatch together, then add parser tests to lock in the new hierarchy
+related_files:
+  - src/cli.rs
+  - src/dispatch.rs
+  - src/commands/gdrive.rs
+  - src/commands/sync.rs
+  - src/commands/raid.rs
+  - README.md
