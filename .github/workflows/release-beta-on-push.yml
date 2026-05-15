@@ -203,9 +203,16 @@ jobs:
         if: matrix.rpm
         run: |
           cargo install cargo-generate-rpm --locked
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/axiom dist/axiom
           cargo generate-rpm --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/generate-rpm/axiom-*.rpm \
-             axiom-${{ matrix.target }}.rpm
+          rpm_file=$(find target -type f -path '*/generate-rpm/*.rpm' | head -n 1)
+          if [ -z "${rpm_file:-}" ]; then
+            echo "RPM file not found after cargo generate-rpm" >&2
+            find target -maxdepth 4 -type f | sort >&2
+            exit 1
+          fi
+          cp "$rpm_file" "axiom-${{ matrix.target }}.rpm"
 
       - uses: actions/upload-artifact@v7
         with:

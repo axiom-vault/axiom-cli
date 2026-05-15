@@ -33,7 +33,7 @@ assets = [
 # ── RPM package (cargo-generate-rpm) ─────────────────────────────────────────
 [package.metadata.generate-rpm]
 assets = [
-    { source = "target/release/axiom", dest = "/usr/bin/axiom", mode = "0755" },
+    { source = "dist/axiom", dest = "/usr/bin/axiom", mode = "0755" },
     { source = "README.md", dest = "/usr/share/doc/axiom/README.md", mode = "0644" },
 ]
 
