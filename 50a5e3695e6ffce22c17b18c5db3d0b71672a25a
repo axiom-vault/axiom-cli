@@ -1,0 +1,15 @@
+problem: Rename CLI executable and command from axiomvault to axiom
+approach: Updated clap/cargo metadata, docs, and user-facing command hints; verified help/completions/tests
+failed_paths:
+  - Batch edit matching was brittle in workflow YAML due formatting
+verification:
+  - cargo fmt --all
+  - cargo test
+  - cargo run -- --help
+  - cargo run -- completions bash
+workflow_learning: Prefer small context-specific edit blocks for minified workflow files
+related_files:
+  - Cargo.toml
+  - README.md
+  - src/commands/raid.rs
+  - .github/workflows/release.yml
