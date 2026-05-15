@@ -1,0 +1,12 @@
+problem: Cargo.lock was modified and needed to be committed without including unrelated files
+approach: Verified repo status showed only Cargo.lock changed, committed just Cargo.lock, then pushed the branch and commit note
+failed_paths:
+  - None
+verification:
+  - git status --short
+  - git diff --stat -- Cargo.lock
+  - git show --stat --oneline HEAD -- Cargo.lock
+  - git notes show HEAD
+workflow_learning: For isolated lockfile updates, verify the worktree first and commit only Cargo.lock to avoid bundling unrelated changes
+related_files:
+  - Cargo.lock
