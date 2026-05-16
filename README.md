@@ -4,74 +4,23 @@
   Command-line interface for AxiomVault — cross-platform encrypted vault with client-side encryption, built in Rust.
 </p>
 
-<p align="center">
-  <a href="https://github.com/axiom-vault/axiom-cli/actions/workflows/rust-ci.yml"><img src="https://github.com/axiom-vault/axiom-cli/actions/workflows/rust-ci.yml/badge.svg" alt="Rust CI"></a>
-  <a href="https://github.com/axiom-vault/axiom-cli/actions/workflows/pr-check.yml"><img src="https://github.com/axiom-vault/axiom-cli/actions/workflows/pr-check.yml/badge.svg" alt="PR Check"></a>
-  <a href="https://github.com/axiom-vault/axiom-cli/releases/latest"><img src="https://img.shields.io/github/v/release/axiom-vault/axiom-cli?include_prereleases" alt="Latest Release"></a>
-  <a href="https://github.com/axiom-vault/axiom-cli/blob/main/LICENSE"><img src="https://img.shields.io/github/license/axiom-vault/axiom-cli" alt="License"></a>
-</p>
-
-> [!WARNING]
-> This project is in **early development** and is **not production ready**. APIs may change, features may be incomplete. Do not use for storing sensitive data in production.
-
-## Overview
-
-`axiom` is the command-line client for [AxiomVault](https://github.com/axiom-vault/axiom-core). It encrypts your files locally before they touch any cloud service, powered by the Rust core library.
-
-**Core library:** [axiom-vault/axiom-core](https://github.com/axiom-vault/axiom-core)
-
 ## Installation
-
-### Quick install (Linux & macOS)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/axiom-vault/axiom-cli/main/install.sh | bash
-```
-
-The script auto-detects your OS and architecture, downloads the matching prebuilt binary from GitHub Releases, verifies its SHA-256 checksum, and installs it to `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` is not writable).
 
 ### Prebuilt binaries
 
-Download the right tarball from [Releases](https://github.com/axiom-vault/axiom-cli/releases/latest):
+Release artifacts are published on GitHub Releases.
 
-| Platform | Asset |
-|----------|-------|
-| Linux x86_64 | `axiom-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux arm64 | `axiom-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS x86_64 | `axiom-x86_64-apple-darwin.tar.gz` |
-| macOS arm64 (M-series) | `axiom-aarch64-apple-darwin.tar.gz` |
+- Linux: `.tar.gz`, `.deb`, `.rpm`
+- macOS: `.tar.gz`
 
-Each release also ships a `SHA256SUMS` file. Example for Linux x86_64:
-
-```bash
-curl -L https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.tar.gz | tar xz
-sudo mv axiom /usr/local/bin/
-```
-
-### Debian / Ubuntu (.deb)
-
-```bash
-curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.deb
-sudo dpkg -i axiom-x86_64-unknown-linux-gnu.deb
-```
-
-### RPM-based (Fedora, RHEL, openSUSE)
-
-```bash
-curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.rpm
-sudo rpm -i axiom-x86_64-unknown-linux-gnu.rpm
-```
-
-### Homebrew (macOS & Linux)
+### Homebrew (macOS/Linux)
 
 ```bash
 brew tap axiom-vault/tap
 brew install axiom
 ```
 
-The Homebrew formula is published from the [`axiom-vault/homebrew-tap`](https://github.com/axiom-vault/homebrew-tap) repository after each stable release.
-
-### AUR (Arch Linux)
+### Arch Linux (AUR)
 
 ```bash
 yay -S axiom-bin
@@ -119,6 +68,7 @@ axiom file extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.
 # Interactive session
 axiom vault open --path ~/my-vault
 
+# YubiKey challenge-response bytes via env (plain UTF-8 or hex:...)
 # Prompt once, then scope the response to each command instead of exporting it
 read -rsp "YubiKey response: " AXIOM_YUBIKEY_RESPONSE; printf '\n'
 AXIOM_YUBIKEY_RESPONSE="$AXIOM_YUBIKEY_RESPONSE" axiom hardware-key enroll --path ~/my-vault --label 'desk yubikey' --key-id slot-2
@@ -134,7 +84,7 @@ axiom mount fuse --path ~/my-vault ~/my-vault-mount
 
 ### Hardware-key env source
 
-For now the CLI reads YubiKey challenge-response bytes from `AXIOM_YUBIKEY_RESPONSE` (or fallback `AXIOM_HARDWARE_KEY_RESPONSE`) so a physical device is not required during development and testing.
+For now the CLI reads YubiKey challenge-response bytes from `AXIOM_YUBIKEY_RESPONSE` or `AXIOM_HARDWARE_KEY_RESPONSE`, so a physical device is not required during development and testing.
 Prefer a one-shot env assignment or a prompt like the example above instead of `export` in shared shells, scripts, or long-lived terminals.
 
 Accepted formats:
@@ -179,8 +129,8 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `hardware-key enroll` | Enroll env-sourced YubiKey challenge-response bytes for a local vault |
 | `hardware-key status` | Show local vault hardware-key enrollment status |
 | `hardware-key remove` | Remove the enrolled local vault hardware key |
-| `hardware-key test` | Verify `AXIOM_YUBIKEY_RESPONSE` against a local vault |
-| `hardware-key open` | Open a local vault with `AXIOM_YUBIKEY_RESPONSE` |
+| `hardware-key test` | Verify `AXIOM_YUBIKEY_RESPONSE` or `AXIOM_HARDWARE_KEY_RESPONSE` against a local vault |
+| `hardware-key open` | Open a local vault with `AXIOM_YUBIKEY_RESPONSE` or `AXIOM_HARDWARE_KEY_RESPONSE` |
 | `remote gdrive auth` | Authenticate with Google Drive |
 | `remote gdrive create` | Create vault on Google Drive |
 | `remote gdrive open` | Open vault from Google Drive |

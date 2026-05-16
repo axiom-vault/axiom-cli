@@ -279,13 +279,13 @@ pub(crate) enum HardwareKeyCommands {
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Verify AXIOM_YUBIKEY_RESPONSE against the enrolled local vault.
+    /// Verify AXIOM_YUBIKEY_RESPONSE or AXIOM_HARDWARE_KEY_RESPONSE against the enrolled local vault.
     Test {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Open a local vault using AXIOM_YUBIKEY_RESPONSE instead of a password.
+    /// Open a local vault using AXIOM_YUBIKEY_RESPONSE or AXIOM_HARDWARE_KEY_RESPONSE instead of a password.
     Open {
         /// Path to the vault.
         #[arg(short, long)]
