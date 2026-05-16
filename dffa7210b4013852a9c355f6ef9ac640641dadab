@@ -1,0 +1,14 @@
+problem: Harden hardware-key CLI PR with privacy-safe status output and behavioral regression coverage
+approach: Kept remote secret-zeroization hardening, hid unauthenticated status metadata, aligned env-var help/docs, and added temp-vault tests for enroll/status/test/open, wrong response, removal, and env error paths
+failed_paths:
+  - Initial push was rejected because the remote PR branch had advanced
+  - Rebased onto origin/feat/hardware-key-cli and resolved README/hardware_key.rs conflicts by preserving the remote one-shot env guidance and zeroized secret loading
+verification:
+  - cargo test
+  - cargo fmt --all --check
+  - git diff --check
+workflow_learning: When hardening an active PR branch, fetch/rebase before final push and preserve earlier security hardening while layering new regression tests
+related_files:
+  - src/commands/hardware_key.rs
+  - src/cli.rs
+  - README.md
