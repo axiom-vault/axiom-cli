@@ -1,0 +1,18 @@
+problem: Add CLI-side hardware-key support without committing unrelated fuse changes
+approach: Added a hardware-key command group backed by env-sourced YubiKey challenge-response bytes, pointed git deps at the core feature branch, documented the env flow, and staged only the relevant files
+failed_paths:
+  - README targeted edits were brittle due compressed formatting, so the file was rewritten cleanly
+verification:
+  - cargo check
+  - cargo test hardware_key -- --nocapture
+  - cargo test parses_grouped_hardware_key -- --nocapture
+  - cargo test loads_primary_env_var -- --nocapture
+workflow_learning: When a repo has unrelated dirty files, stage explicit paths and confirm HEAD plus post-commit status before pushing
+related_files:
+  - Cargo.toml
+  - Cargo.lock
+  - README.md
+  - src/cli.rs
+  - src/commands/hardware_key.rs
+  - src/commands/mod.rs
+  - src/dispatch.rs
