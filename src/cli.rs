@@ -49,14 +49,15 @@ pub(crate) enum RaidModeArg {
 #[derive(Parser)]
 #[command(name = "axiom")]
 #[command(about = "AxiomVault - Encrypted vault management")]
-#[command(version = option_env!("AXIOM_VERSION")
-    .or(option_env!("AXIOMVAULT_VERSION"))
-    .unwrap_or(env!("CARGO_PKG_VERSION")))]
+#[command(
+    version = option_env!("AXIOM_VERSION")
+        .or(option_env!("AXIOMVAULT_VERSION"))
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+)]
 pub(crate) struct Cli {
     /// Enable verbose logging.
     #[arg(short, long)]
     pub(crate) verbose: bool,
-
     #[command(subcommand)]
     pub(crate) command: Commands,
 }
@@ -82,6 +83,11 @@ pub(crate) enum Commands {
     Recovery {
         #[command(subcommand)]
         command: RecoveryCommands,
+    },
+    /// Hardware-key commands backed by YubiKey challenge-response bytes.
+    HardwareKey {
+        #[command(subcommand)]
+        command: HardwareKeyCommands,
     },
     /// Remote provider commands.
     Remote {
@@ -241,6 +247,46 @@ pub(crate) enum RecoveryCommands {
     },
     /// Migrate a legacy vault to support recovery keys.
     Enable {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum HardwareKeyCommands {
+    /// Enroll YubiKey challenge-response bytes for a local vault.
+    Enroll {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+        /// Optional human-readable label for the enrolled device.
+        #[arg(long)]
+        label: Option<String>,
+        /// Optional device identifier or slot hint.
+        #[arg(long)]
+        key_id: Option<String>,
+    },
+    /// Show whether a local vault has a hardware key enrolled.
+    Status {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+    },
+    /// Remove the enrolled hardware key from a local vault.
+    Remove {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+    },
+    /// Verify AXIOM_YUBIKEY_RESPONSE against the enrolled local vault.
+    Test {
+        /// Path to the vault.
+        #[arg(short, long)]
+        path: PathBuf,
+    },
+    /// Open a local vault using AXIOM_YUBIKEY_RESPONSE instead of a password.
+    Open {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
@@ -495,6 +541,51 @@ mod tests {
                 assert_eq!(path, PathBuf::from("./vault"));
                 assert_eq!(port, 9090);
             }
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_hardware_key_enroll_command() {
+        let cli = Cli::try_parse_from([
+            "axiom",
+            "hardware-key",
+            "enroll",
+            "--path",
+            "./vault",
+            "--label",
+            "desk-key",
+            "--key-id",
+            "slot-2",
+        ])
+        .expect("hardware-key enroll should parse");
+
+        match cli.command {
+            Commands::HardwareKey {
+                command:
+                    HardwareKeyCommands::Enroll {
+                        path,
+                        label,
+                        key_id,
+                    },
+            } => {
+                assert_eq!(path, PathBuf::from("./vault"));
+                assert_eq!(label.as_deref(), Some("desk-key"));
+                assert_eq!(key_id.as_deref(), Some("slot-2"));
+            }
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_hardware_key_open_command() {
+        let cli = Cli::try_parse_from(["axiom", "hardware-key", "open", "--path", "./vault"])
+            .expect("hardware-key open should parse");
+
+        match cli.command {
+            Commands::HardwareKey {
+                command: HardwareKeyCommands::Open { path },
+            } => assert_eq!(path, PathBuf::from("./vault")),
             _ => panic!("unexpected command tree"),
         }
     }

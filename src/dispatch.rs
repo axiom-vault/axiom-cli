@@ -1,11 +1,10 @@
-use anyhow::{bail, Result};
-use clap::CommandFactory;
-
 use crate::cli::{
-    Cli, Commands, FileCommands, GdriveCommands, MountCommands, PasswordCommands, RaidCommands,
-    RecoveryCommands, RemoteCommands, SyncCommands, VaultCommands,
+    Cli, Commands, FileCommands, GdriveCommands, HardwareKeyCommands, MountCommands,
+    PasswordCommands, RaidCommands, RecoveryCommands, RemoteCommands, SyncCommands, VaultCommands,
 };
 use crate::{commands, completions};
+use anyhow::{bail, Result};
+use clap::CommandFactory;
 
 pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
@@ -56,6 +55,19 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                 commands::recovery::cmd_show_recovery_key(&path).await
             }
             RecoveryCommands::Enable { path } => commands::recovery::cmd_migrate_vault(&path).await,
+        },
+        Commands::HardwareKey { command } => match command {
+            HardwareKeyCommands::Enroll {
+                path,
+                label,
+                key_id,
+            } => {
+                commands::hardware_key::cmd_enroll(&path, label.as_deref(), key_id.as_deref()).await
+            }
+            HardwareKeyCommands::Status { path } => commands::hardware_key::cmd_status(&path).await,
+            HardwareKeyCommands::Remove { path } => commands::hardware_key::cmd_remove(&path).await,
+            HardwareKeyCommands::Test { path } => commands::hardware_key::cmd_test(&path).await,
+            HardwareKeyCommands::Open { path } => commands::hardware_key::cmd_open(&path).await,
         },
         Commands::Remote { command } => match command {
             RemoteCommands::Gdrive { command } => match command {

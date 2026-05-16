@@ -11,8 +11,6 @@
   <a href="https://github.com/axiom-vault/axiom-cli/blob/main/LICENSE"><img src="https://img.shields.io/github/license/axiom-vault/axiom-cli" alt="License"></a>
 </p>
 
----
-
 > [!WARNING]
 > This project is in **early development** and is **not production ready**. APIs may change, features may be incomplete. Do not use for storing sensitive data in production.
 
@@ -43,9 +41,7 @@ Download the right tarball from [Releases](https://github.com/axiom-vault/axiom-
 | macOS x86_64 | `axiom-x86_64-apple-darwin.tar.gz` |
 | macOS arm64 (M-series) | `axiom-aarch64-apple-darwin.tar.gz` |
 
-Each release also ships a `SHA256SUMS` file.
-
-Example for Linux x86_64:
+Each release also ships a `SHA256SUMS` file. Example for Linux x86_64:
 
 ```bash
 curl -L https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.tar.gz | tar xz
@@ -55,7 +51,6 @@ sudo mv axiom /usr/local/bin/
 ### Debian / Ubuntu (.deb)
 
 ```bash
-# Download and install the .deb for x86_64
 curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.deb
 sudo dpkg -i axiom-x86_64-unknown-linux-gnu.deb
 ```
@@ -63,7 +58,6 @@ sudo dpkg -i axiom-x86_64-unknown-linux-gnu.deb
 ### RPM-based (Fedora, RHEL, openSUSE)
 
 ```bash
-# Download and install the .rpm for x86_64
 curl -LO https://github.com/axiom-vault/axiom-cli/releases/latest/download/axiom-x86_64-unknown-linux-gnu.rpm
 sudo rpm -i axiom-x86_64-unknown-linux-gnu.rpm
 ```
@@ -80,7 +74,6 @@ The Homebrew formula is published from the [`axiom-vault/homebrew-tap`](https://
 ### AUR (Arch Linux)
 
 ```bash
-# Using an AUR helper such as yay:
 yay -S axiom-bin
 ```
 
@@ -126,25 +119,33 @@ axiom file extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.
 # Interactive session
 axiom vault open --path ~/my-vault
 
+# YubiKey challenge-response bytes via env (plain UTF-8 or hex:...)
+export AXIOM_YUBIKEY_RESPONSE='hex:73696d756c617465642d796b2d726573706f6e7365'
+axiom hardware-key enroll --path ~/my-vault --label 'desk yubikey' --key-id slot-2
+axiom hardware-key status --path ~/my-vault
+axiom hardware-key test --path ~/my-vault
+axiom hardware-key open --path ~/my-vault
+
 # Mount as a filesystem (when built with --features fuse)
 mkdir -p ~/my-vault-mount
 axiom mount fuse --path ~/my-vault ~/my-vault-mount
 ```
 
+### Hardware-key env source
+
+For now the CLI reads YubiKey challenge-response bytes from `AXIOM_YUBIKEY_RESPONSE` (or fallback `AXIOM_HARDWARE_KEY_RESPONSE`) so a physical device is not required during development and testing.
+
+Accepted formats:
+
+- raw UTF-8 bytes, for example `simulated-yubikey-response`
+- hex with a `hex:` prefix, for example `hex:736563726574`
+
 ### Google Drive
 
 ```bash
-# Authenticate (opens browser)
 axiom remote gdrive auth --output ~/gdrive-tokens.json
-
-# Create vault on Drive
-axiom remote gdrive create --name CloudVault \
-  --folder-id YOUR_FOLDER_ID \
-  --tokens ~/gdrive-tokens.json
-
-# Open cloud vault
-axiom remote gdrive open --folder-id YOUR_FOLDER_ID \
-  --tokens ~/gdrive-tokens.json
+axiom remote gdrive create --name CloudVault --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
+axiom remote gdrive open --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
 ```
 
 ### Sync
@@ -173,6 +174,11 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `password reset` | Reset vault password |
 | `recovery show-key` | Show recovery key |
 | `recovery enable` | Enable recovery keys for a legacy vault |
+| `hardware-key enroll` | Enroll env-sourced YubiKey challenge-response bytes for a local vault |
+| `hardware-key status` | Show local vault hardware-key enrollment status |
+| `hardware-key remove` | Remove the enrolled local vault hardware key |
+| `hardware-key test` | Verify `AXIOM_YUBIKEY_RESPONSE` against a local vault |
+| `hardware-key open` | Open a local vault with `AXIOM_YUBIKEY_RESPONSE` |
 | `remote gdrive auth` | Authenticate with Google Drive |
 | `remote gdrive create` | Create vault on Google Drive |
 | `remote gdrive open` | Open vault from Google Drive |
@@ -202,9 +208,9 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 ## Development
 
 ```bash
-cargo fmt --all      # Format
-cargo clippy -- -D warnings  # Lint
-cargo test           # Test
+cargo fmt --all
+cargo clippy -- -D warnings
+cargo test
 ```
 
 ## Contributing
