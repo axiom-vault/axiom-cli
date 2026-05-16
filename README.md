@@ -119,12 +119,13 @@ axiom file extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.
 # Interactive session
 axiom vault open --path ~/my-vault
 
-# YubiKey challenge-response bytes via env (plain UTF-8 or hex:...)
-export AXIOM_YUBIKEY_RESPONSE='hex:73696d756c617465642d796b2d726573706f6e7365'
-axiom hardware-key enroll --path ~/my-vault --label 'desk yubikey' --key-id slot-2
+# Prompt once, then scope the response to each command instead of exporting it
+read -rsp "YubiKey response: " AXIOM_YUBIKEY_RESPONSE; printf '\n'
+AXIOM_YUBIKEY_RESPONSE="$AXIOM_YUBIKEY_RESPONSE" axiom hardware-key enroll --path ~/my-vault --label 'desk yubikey' --key-id slot-2
 axiom hardware-key status --path ~/my-vault
-axiom hardware-key test --path ~/my-vault
-axiom hardware-key open --path ~/my-vault
+AXIOM_YUBIKEY_RESPONSE="$AXIOM_YUBIKEY_RESPONSE" axiom hardware-key test --path ~/my-vault
+AXIOM_YUBIKEY_RESPONSE="$AXIOM_YUBIKEY_RESPONSE" axiom hardware-key open --path ~/my-vault
+unset AXIOM_YUBIKEY_RESPONSE
 
 # Mount as a filesystem (when built with --features fuse)
 mkdir -p ~/my-vault-mount
@@ -134,6 +135,7 @@ axiom mount fuse --path ~/my-vault ~/my-vault-mount
 ### Hardware-key env source
 
 For now the CLI reads YubiKey challenge-response bytes from `AXIOM_YUBIKEY_RESPONSE` (or fallback `AXIOM_HARDWARE_KEY_RESPONSE`) so a physical device is not required during development and testing.
+Prefer a one-shot env assignment or a prompt like the example above instead of `export` in shared shells, scripts, or long-lived terminals.
 
 Accepted formats:
 

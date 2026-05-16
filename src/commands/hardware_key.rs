@@ -6,9 +6,31 @@ use axiomvault_vault::{
     VaultConfig, VaultManager, VaultSession,
 };
 use std::path::Path;
+use zeroize::Zeroize;
 
 const HARDWARE_SECRET_ENV_VARS: [&str; 2] =
     ["AXIOM_YUBIKEY_RESPONSE", "AXIOM_HARDWARE_KEY_RESPONSE"];
+
+struct LoadedHardwareSecret {
+    source_env_var: &'static str,
+    bytes: Vec<u8>,
+}
+
+impl LoadedHardwareSecret {
+    fn source_env_var(&self) -> &'static str {
+        self.source_env_var
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+}
+
+impl Drop for LoadedHardwareSecret {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
 
 pub(crate) async fn cmd_enroll(
     path: &Path,
@@ -23,13 +45,13 @@ pub(crate) async fn cmd_enroll(
         .open_vault("local", provider_config, &password)
         .await
         .context("Failed to open vault")?;
-
     let metadata = HardwareKeyMetadata::new(
         HardwareKeyKind::YubiKeyHmacSha1,
         label.map(str::to_owned),
         key_id.map(str::to_owned),
     );
     let master_key = session.master_key().context("Session not active")?.clone();
+
     session
         .config_mut()
         .enroll_hardware_key(&master_key, secret.as_slice(), metadata)
@@ -40,7 +62,7 @@ pub(crate) async fn cmd_enroll(
         .context("Failed to save hardware-key enrollment")?;
 
     println!("Hardware key enrolled successfully.");
-    println!(" Secret source: AXIOM_YUBIKEY_RESPONSE");
+    println!(" Secret source: {}", secret.source_env_var());
     println!(" Kind: YubiKey challenge-response bytes");
     Ok(())
 }
@@ -63,7 +85,6 @@ pub(crate) async fn cmd_status(path: &Path) -> Result<()> {
         }
         println!(" Enrolled at: {}", metadata.enrolled_at);
     }
-
     Ok(())
 }
 
@@ -86,7 +107,6 @@ pub(crate) async fn cmd_remove(path: &Path) -> Result<()> {
         .save_config(&session)
         .await
         .context("Failed to save hardware-key removal")?;
-
     println!("Hardware key removed successfully.");
     Ok(())
 }
@@ -127,20 +147,27 @@ pub(crate) async fn cmd_open(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn load_hardware_secret_from_env() -> Result<Vec<u8>> {
+fn load_hardware_secret_from_env() -> Result<LoadedHardwareSecret> {
     for env_var in HARDWARE_SECRET_ENV_VARS {
-        if let Ok(value) = std::env::var(env_var) {
+        if let Ok(mut value) = std::env::var(env_var) {
             if value.trim().is_empty() {
+                value.zeroize();
                 continue;
             }
 
-            return decode_hardware_secret(&value)
+            let decoded = decode_hardware_secret(&value)
                 .with_context(|| format!("Failed to decode {env_var}"));
+            value.zeroize();
+
+            return decoded.map(|bytes| LoadedHardwareSecret {
+                source_env_var: env_var,
+                bytes,
+            });
         }
     }
 
     bail!(
-        "Set AXIOM_YUBIKEY_RESPONSE to the YubiKey challenge-response bytes (plain UTF-8 or hex:...)"
+        "Set AXIOM_YUBIKEY_RESPONSE (or AXIOM_HARDWARE_KEY_RESPONSE) to the YubiKey challenge-response bytes (plain UTF-8 or hex:...)"
     )
 }
 
@@ -149,11 +176,9 @@ fn decode_hardware_secret(value: &str) -> Result<Vec<u8>> {
     if trimmed.is_empty() {
         bail!("Hardware-key response cannot be empty");
     }
-
     if let Some(hex_value) = trimmed.strip_prefix("hex:") {
         return decode_hex_secret(hex_value);
     }
-
     Ok(trimmed.as_bytes().to_vec())
 }
 
@@ -162,11 +187,10 @@ fn decode_hex_secret(value: &str) -> Result<Vec<u8>> {
         .chars()
         .filter(|ch| !ch.is_ascii_whitespace() && *ch != '_')
         .collect();
-
     if cleaned.is_empty() {
         bail!("hex hardware-key response cannot be empty");
     }
-    if cleaned.len() % 2 != 0 {
+    if !cleaned.len().is_multiple_of(2) {
         bail!("hex hardware-key response must contain an even number of digits");
     }
 
@@ -205,7 +229,9 @@ async fn load_local_config_and_provider(
 }
 
 fn local_provider_config(path: &Path) -> serde_json::Value {
-    serde_json::json!({ "root": path.to_string_lossy().to_string() })
+    serde_json::json!({
+        "root": path.to_string_lossy().to_string()
+    })
 }
 
 #[cfg(test)]
@@ -243,7 +269,25 @@ mod tests {
         std::env::set_var("AXIOM_HARDWARE_KEY_RESPONSE", "ignored");
 
         let decoded = load_hardware_secret_from_env().unwrap();
-        assert_eq!(decoded, b"abc");
+        assert_eq!(decoded.source_env_var(), "AXIOM_YUBIKEY_RESPONSE");
+        assert_eq!(decoded.as_slice(), b"abc");
+
+        restore_env("AXIOM_YUBIKEY_RESPONSE", original_primary);
+        restore_env("AXIOM_HARDWARE_KEY_RESPONSE", original_fallback);
+    }
+
+    #[test]
+    fn loads_fallback_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_primary = std::env::var("AXIOM_YUBIKEY_RESPONSE").ok();
+        let original_fallback = std::env::var("AXIOM_HARDWARE_KEY_RESPONSE").ok();
+
+        std::env::remove_var("AXIOM_YUBIKEY_RESPONSE");
+        std::env::set_var("AXIOM_HARDWARE_KEY_RESPONSE", "hex:646566");
+
+        let decoded = load_hardware_secret_from_env().unwrap();
+        assert_eq!(decoded.source_env_var(), "AXIOM_HARDWARE_KEY_RESPONSE");
+        assert_eq!(decoded.as_slice(), b"def");
 
         restore_env("AXIOM_YUBIKEY_RESPONSE", original_primary);
         restore_env("AXIOM_HARDWARE_KEY_RESPONSE", original_fallback);
