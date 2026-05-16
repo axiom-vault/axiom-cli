@@ -300,10 +300,13 @@ pub(crate) enum RemoteCommands {
         #[command(subcommand)]
         command: GdriveCommands,
     },
+    /// Dropbox remote commands.
+    Dropbox {
+        #[command(subcommand)]
+        command: DropboxCommands,
+    },
     /// iCloud remote support (coming soon).
     Icloud,
-    /// Dropbox remote support (coming soon).
-    Dropbox,
 }
 
 #[derive(Subcommand)]
@@ -341,6 +344,37 @@ pub(crate) enum GdriveCommands {
         #[arg(short, long)]
         folder_id: String,
         /// Path to tokens file.
+        #[arg(short, long)]
+        tokens: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DropboxCommands {
+    /// Authenticate with Dropbox and get tokens.
+    Auth {
+        #[arg(long)]
+        app_key: Option<String>,
+        #[arg(long)]
+        app_secret: Option<String>,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Create a vault on Dropbox.
+    Create {
+        #[arg(short, long)]
+        name: String,
+        #[arg(short = 'r', long)]
+        root_path: String,
+        #[arg(short, long)]
+        tokens: PathBuf,
+        #[arg(short, long, value_enum, default_value_t = KdfStrength::Moderate)]
+        strength: KdfStrength,
+    },
+    /// Open a vault on Dropbox.
+    Open {
+        #[arg(short = 'r', long)]
+        root_path: String,
         #[arg(short, long)]
         tokens: PathBuf,
     },
@@ -523,6 +557,94 @@ mod tests {
                         command: GdriveCommands::Auth { output, .. },
                     },
             } => assert_eq!(output, PathBuf::from("tokens.json")),
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_remote_dropbox_auth_command() {
+        let cli = Cli::try_parse_from([
+            "axiom",
+            "remote",
+            "dropbox",
+            "auth",
+            "--output",
+            "dropbox-tokens.json",
+        ])
+        .expect("remote dropbox auth should parse");
+
+        match cli.command {
+            Commands::Remote {
+                command:
+                    RemoteCommands::Dropbox {
+                        command: DropboxCommands::Auth { output, .. },
+                    },
+            } => assert_eq!(output, PathBuf::from("dropbox-tokens.json")),
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_remote_dropbox_create_command() {
+        let cli = Cli::try_parse_from([
+            "axiom",
+            "remote",
+            "dropbox",
+            "create",
+            "--name",
+            "CloudVault",
+            "--root-path",
+            "/AxiomVault",
+            "--tokens",
+            "dropbox-tokens.json",
+        ])
+        .expect("remote dropbox create should parse");
+
+        match cli.command {
+            Commands::Remote {
+                command:
+                    RemoteCommands::Dropbox {
+                        command:
+                            DropboxCommands::Create {
+                                name,
+                                root_path,
+                                tokens,
+                                strength: KdfStrength::Moderate,
+                            },
+                    },
+            } => {
+                assert_eq!(name, "CloudVault");
+                assert_eq!(root_path, "/AxiomVault");
+                assert_eq!(tokens, PathBuf::from("dropbox-tokens.json"));
+            }
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_remote_dropbox_open_command() {
+        let cli = Cli::try_parse_from([
+            "axiom",
+            "remote",
+            "dropbox",
+            "open",
+            "--root-path",
+            "/AxiomVault",
+            "--tokens",
+            "dropbox-tokens.json",
+        ])
+        .expect("remote dropbox open should parse");
+
+        match cli.command {
+            Commands::Remote {
+                command:
+                    RemoteCommands::Dropbox {
+                        command: DropboxCommands::Open { root_path, tokens },
+                    },
+            } => {
+                assert_eq!(root_path, "/AxiomVault");
+                assert_eq!(tokens, PathBuf::from("dropbox-tokens.json"));
+            }
             _ => panic!("unexpected command tree"),
         }
     }

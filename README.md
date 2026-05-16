@@ -85,6 +85,7 @@ axiom mount fuse --path ~/my-vault ~/my-vault-mount
 ### Hardware-key env source
 
 For now the CLI reads YubiKey challenge-response bytes from `AXIOM_YUBIKEY_RESPONSE` or `AXIOM_HARDWARE_KEY_RESPONSE`, so a physical device is not required during development and testing.
+
 Prefer a one-shot env assignment or a prompt like the example above instead of `export` in shared shells, scripts, or long-lived terminals.
 
 Accepted formats:
@@ -99,6 +100,16 @@ axiom remote gdrive auth --output ~/gdrive-tokens.json
 axiom remote gdrive create --name CloudVault --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
 axiom remote gdrive open --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
 ```
+
+### Dropbox
+
+```bash
+axiom remote dropbox auth --output ~/dropbox-tokens.json
+axiom remote dropbox create --name CloudVault --root-path /AxiomVault --tokens ~/dropbox-tokens.json
+axiom remote dropbox open --root-path /AxiomVault --tokens ~/dropbox-tokens.json
+```
+
+`remote dropbox auth` accepts `--app-key` / `--app-secret` or falls back to `AXIOM_DROPBOX_APP_KEY` / `AXIOM_DROPBOX_APP_SECRET`. The legacy `AXIOMVAULT_DROPBOX_APP_KEY` / `AXIOMVAULT_DROPBOX_APP_SECRET` names remain supported. OAuth token files are only reported as successful after the code exchange and token save complete. On Unix, token files are written atomically with `0600` permissions; on non-Unix platforms the CLI falls back to a best-effort non-atomic write, so prefer a protected directory.
 
 ### Sync
 
@@ -134,8 +145,10 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `remote gdrive auth` | Authenticate with Google Drive |
 | `remote gdrive create` | Create vault on Google Drive |
 | `remote gdrive open` | Open vault from Google Drive |
+| `remote dropbox auth` | Authenticate with Dropbox |
+| `remote dropbox create` | Create vault on Dropbox |
+| `remote dropbox open` | Open vault from Dropbox |
 | `remote icloud` | Placeholder for future iCloud remote support |
-| `remote dropbox` | Placeholder for future Dropbox remote support |
 | `sync run` | Synchronize vault with remote |
 | `sync status` | Show sync status |
 | `sync conflicts` | List sync conflicts |
@@ -153,8 +166,8 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 
 ```text
 --strength interactive # ~0.5s, mobile-friendly (64 MiB, 3 iterations)
---strength moderate    # ~1s, balanced (default, 32 MiB, 3 iterations)
---strength sensitive   # ~3s, high security (256 MiB, 4 iterations)
+--strength moderate # ~1s, balanced (default, 32 MiB, 3 iterations)
+--strength sensitive # ~3s, high security (256 MiB, 4 iterations)
 ```
 
 ## Development

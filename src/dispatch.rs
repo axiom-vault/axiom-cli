@@ -1,6 +1,7 @@
 use crate::cli::{
-    Cli, Commands, FileCommands, GdriveCommands, HardwareKeyCommands, MountCommands,
-    PasswordCommands, RaidCommands, RecoveryCommands, RemoteCommands, SyncCommands, VaultCommands,
+    Cli, Commands, DropboxCommands, FileCommands, GdriveCommands, HardwareKeyCommands,
+    MountCommands, PasswordCommands, RaidCommands, RecoveryCommands, RemoteCommands, SyncCommands,
+    VaultCommands,
 };
 use crate::{commands, completions};
 use anyhow::{bail, Result};
@@ -88,8 +89,26 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                     commands::gdrive::cmd_gdrive_open(&folder_id, &tokens).await
                 }
             },
+            RemoteCommands::Dropbox { command } => match command {
+                DropboxCommands::Auth {
+                    app_key,
+                    app_secret,
+                    output,
+                } => commands::dropbox::cmd_dropbox_auth(app_key, app_secret, &output).await,
+                DropboxCommands::Create {
+                    name,
+                    root_path,
+                    tokens,
+                    strength,
+                } => {
+                    commands::dropbox::cmd_dropbox_create(&name, &root_path, &tokens, strength)
+                        .await
+                }
+                DropboxCommands::Open { root_path, tokens } => {
+                    commands::dropbox::cmd_dropbox_open(&root_path, &tokens).await
+                }
+            },
             RemoteCommands::Icloud => bail!("iCloud remote support is not implemented yet"),
-            RemoteCommands::Dropbox => bail!("Dropbox remote support is not implemented yet"),
         },
         Commands::Sync { command } => match command {
             SyncCommands::Run {
