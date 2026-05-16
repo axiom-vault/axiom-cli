@@ -1,0 +1,16 @@
+problem: Incorporate iCloud subfolder confinement into the CLI PR without regressing existing hardware-key-dependent core APIs
+approach: Created a compatible axiom-core integration commit by cherry-picking the confinement fix onto the CLI-pinned hardware-key core revision, then repinned axiom-cli, added helper-level rejection tests for unsafe --subfolder values, and documented the relative-path constraint
+failed_paths:
+  - Pinning directly to core commit ed570c0 broke unrelated hardware-key APIs required by axiom-cli
+  - Initial helper tests asserted error.to_string() and missed anyhow chain details
+verification:
+  - cargo test -p axiomvault-storage icloud -- --nocapture (in axiom-core)
+  - cargo fmt --all
+  - cargo clippy -- -D warnings
+  - cargo test -q
+workflow_learning: When a downstream repo pins a feature branch commit from a shared core repo, integrate cross-branch hardening fixes onto the compatible core base before repinning, then assert anyhow chains with {error:#} for helper-level regression tests
+related_files:
+  - Cargo.toml
+  - Cargo.lock
+  - README.md
+  - src/commands/icloud.rs
