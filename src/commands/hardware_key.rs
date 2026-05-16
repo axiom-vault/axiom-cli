@@ -5,7 +5,7 @@ use axiomvault_vault::{
     config::{HardwareKeyKind, HardwareKeyMetadata, CONFIG_FILENAME},
     VaultConfig, VaultManager, VaultSession,
 };
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use zeroize::Zeroize;
 
 const HARDWARE_SECRET_ENV_VARS: [&str; 2] =
@@ -180,7 +180,7 @@ fn decode_hex_secret(value: &str) -> Result<Vec<u8>> {
     if cleaned.is_empty() {
         bail!("hex hardware-key response cannot be empty");
     }
-    if cleaned.len() % 2 != 0 {
+    if !cleaned.len().is_multiple_of(2) {
         bail!("hex hardware-key response must contain an even number of digits");
     }
 
@@ -252,6 +252,7 @@ fn local_provider_config(path: &Path) -> serde_json::Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::{
         cmd_enroll, cmd_open, cmd_remove, cmd_status, cmd_test, decode_hardware_secret,
