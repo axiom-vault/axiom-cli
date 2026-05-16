@@ -108,7 +108,7 @@ axiom remote icloud create --name CloudVault --subfolder AxiomVault
 axiom remote icloud open --subfolder AxiomVault
 ```
 
-`remote icloud` uses the macOS iCloud Drive location by default. Use `--root-path` to override auto-detection for custom mounts or tests, and `--subfolder` to keep vault data inside a dedicated iCloud folder.
+`remote icloud` uses the macOS iCloud Drive location by default. Use `--root-path` to override auto-detection for custom mounts or tests, and `--subfolder` to keep vault data inside a dedicated iCloud folder. `--subfolder` must remain relative to the iCloud root; absolute paths, traversal, and empty path components are rejected.
 
 ### Sync
 
