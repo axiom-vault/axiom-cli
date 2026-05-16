@@ -1,0 +1,14 @@
+problem: Apply bounded simplify/deslop pass to Dropbox PR #13 without changing behavior
+approach: Ran Dropbox/shared OAuth regression checks first, then simplified duplicated first-non-empty env resolution and repeated 400-level callback failure construction in src/commands/remote_oauth.rs only
+failed_paths:
+  - None
+verification:
+  - cargo test -q dropbox
+  - cargo test -q remote_oauth
+  - cargo test -q
+  - cargo fmt --all
+  - cargo clippy --all-targets --all-features -- -D warnings
+  - git diff --check
+workflow_learning: For AI-slop cleanup on security-sensitive flows, prefer extracting tiny shared helpers inside the existing boundary rather than broad cross-file rewrites
+related_files:
+  - src/commands/remote_oauth.rs
