@@ -1,0 +1,17 @@
+problem: Add full Dropbox remote CLI support without bundling iCloud or unrelated PR work
+approach: Added dedicated Dropbox auth/create/open commands, shared OAuth callback and secure token-file helpers with Google Drive, updated dispatch/CLI/docs, and covered parser plus fallback/permission tests
+failed_paths:
+  - batch edit matching failed repeatedly on minified src/cli.rs, so I patched that file via scripted text replacement before rerunning fmt
+verification:
+  - cargo test -q
+  - cargo clippy -- -D warnings
+  - cargo run -- remote dropbox --help
+  - git diff --check
+workflow_learning: When clap source files are minified or formatting-hostile, prefer deterministic marker-based rewrites, then rustfmt and parser smoke tests to confirm the command tree
+related_files:
+  - README.md
+  - src/cli.rs
+  - src/commands/dropbox.rs
+  - src/commands/gdrive.rs
+  - src/commands/remote_oauth.rs
+  - src/dispatch.rs
