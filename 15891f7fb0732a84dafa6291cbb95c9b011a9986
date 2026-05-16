@@ -1,0 +1,11 @@
+problem: PR #11 CI failed on clippy for hardware-key changes
+approach: Isolated the exact warnings from CI logs, fixed the real lint issues, and used a module-level allow only for the test env-lock await pattern
+failed_paths:
+  - Considered a runtime-based test refactor, but it was more churn than needed for a CI-only lint failure
+verification:
+  - cargo fmt --all --check
+  - cargo clippy --all-targets --all-features -- -D warnings
+  - cargo test
+workflow_learning: For test-only await-holding-lock warnings, prefer a narrowly scoped allow at the test module boundary if the locking pattern is intentional
+related_files:
+  - src/commands/hardware_key.rs
