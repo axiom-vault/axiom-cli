@@ -1,0 +1,17 @@
+problem: Add full iCloud remote CLI support without bundling Dropbox or fuse work
+approach: Added dedicated remote icloud create/open commands, wired dispatch/CLI parsing, implemented iCloud provider-config helpers and temp-dir create/open tests, and updated README command docs
+failed_paths:
+  - Minified cli.rs and README.md made block edits unreliable, so I rewrote those files directly before rerunning formatter/tests
+verification:
+  - cargo fmt --all
+  - cargo test -q
+  - cargo clippy -- -D warnings
+  - cargo run --quiet -- remote icloud --help
+  - git diff --check
+workflow_learning: When generated or minified source blocks resist exact-match edits, rewrite the full file deterministically and immediately re-run rustfmt plus parser tests
+related_files:
+  - README.md
+  - src/cli.rs
+  - src/commands/icloud.rs
+  - src/commands/mod.rs
+  - src/dispatch.rs
