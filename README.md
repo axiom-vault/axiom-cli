@@ -85,6 +85,7 @@ axiom mount fuse --path ~/my-vault ~/my-vault-mount
 ### Hardware-key env source
 
 For now the CLI reads YubiKey challenge-response bytes from `AXIOM_YUBIKEY_RESPONSE` or `AXIOM_HARDWARE_KEY_RESPONSE`, so a physical device is not required during development and testing.
+
 Prefer a one-shot env assignment or a prompt like the example above instead of `export` in shared shells, scripts, or long-lived terminals.
 
 Accepted formats:
@@ -99,6 +100,15 @@ axiom remote gdrive auth --output ~/gdrive-tokens.json
 axiom remote gdrive create --name CloudVault --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
 axiom remote gdrive open --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
 ```
+
+### iCloud Drive
+
+```bash
+axiom remote icloud create --name CloudVault --subfolder AxiomVault
+axiom remote icloud open --subfolder AxiomVault
+```
+
+`remote icloud` uses the macOS iCloud Drive location by default. Use `--root-path` to override auto-detection for custom mounts or tests, and `--subfolder` to keep vault data inside a dedicated iCloud folder.
 
 ### Sync
 
@@ -134,7 +144,8 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `remote gdrive auth` | Authenticate with Google Drive |
 | `remote gdrive create` | Create vault on Google Drive |
 | `remote gdrive open` | Open vault from Google Drive |
-| `remote icloud` | Placeholder for future iCloud remote support |
+| `remote icloud create` | Create vault on iCloud Drive |
+| `remote icloud open` | Open vault from iCloud Drive |
 | `remote dropbox` | Placeholder for future Dropbox remote support |
 | `sync run` | Synchronize vault with remote |
 | `sync status` | Show sync status |
@@ -153,8 +164,8 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 
 ```text
 --strength interactive # ~0.5s, mobile-friendly (64 MiB, 3 iterations)
---strength moderate    # ~1s, balanced (default, 32 MiB, 3 iterations)
---strength sensitive   # ~3s, high security (256 MiB, 4 iterations)
+--strength moderate # ~1s, balanced (default, 32 MiB, 3 iterations)
+--strength sensitive # ~3s, high security (256 MiB, 4 iterations)
 ```
 
 ## Development
@@ -178,4 +189,4 @@ All PRs must pass CI checks (formatting, clippy, tests) before merging.
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache 2.0](LICENSE).
