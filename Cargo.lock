@@ -189,7 +189,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-common"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=970329e296e19aa5ffedc9d95418f125cdfd0847#970329e296e19aa5ffedc9d95418f125cdfd0847"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=0878e4a8ae6e7f34422bc1e553cf9506d938ad05#0878e4a8ae6e7f34422bc1e553cf9506d938ad05"
 dependencies = [
  "serde",
  "serde_json",
@@ -200,7 +200,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-crypto"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=970329e296e19aa5ffedc9d95418f125cdfd0847#970329e296e19aa5ffedc9d95418f125cdfd0847"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=0878e4a8ae6e7f34422bc1e553cf9506d938ad05#0878e4a8ae6e7f34422bc1e553cf9506d938ad05"
 dependencies = [
  "argon2",
  "axiomvault-common",
@@ -219,7 +219,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-fuse"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=970329e296e19aa5ffedc9d95418f125cdfd0847#970329e296e19aa5ffedc9d95418f125cdfd0847"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=0878e4a8ae6e7f34422bc1e553cf9506d938ad05#0878e4a8ae6e7f34422bc1e553cf9506d938ad05"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -242,7 +242,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-storage"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=970329e296e19aa5ffedc9d95418f125cdfd0847#970329e296e19aa5ffedc9d95418f125cdfd0847"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=0878e4a8ae6e7f34422bc1e553cf9506d938ad05#0878e4a8ae6e7f34422bc1e553cf9506d938ad05"
 dependencies = [
  "async-trait",
  "axiomvault-common",
@@ -269,7 +269,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-sync"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=970329e296e19aa5ffedc9d95418f125cdfd0847#970329e296e19aa5ffedc9d95418f125cdfd0847"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=0878e4a8ae6e7f34422bc1e553cf9506d938ad05#0878e4a8ae6e7f34422bc1e553cf9506d938ad05"
 dependencies = [
  "async-trait",
  "axiomvault-common",
@@ -289,7 +289,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-vault"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=970329e296e19aa5ffedc9d95418f125cdfd0847#970329e296e19aa5ffedc9d95418f125cdfd0847"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=0878e4a8ae6e7f34422bc1e553cf9506d938ad05#0878e4a8ae6e7f34422bc1e553cf9506d938ad05"
 dependencies = [
  "async-trait",
  "axiomvault-common",
@@ -310,7 +310,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-webdav"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=970329e296e19aa5ffedc9d95418f125cdfd0847#970329e296e19aa5ffedc9d95418f125cdfd0847"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=0878e4a8ae6e7f34422bc1e553cf9506d938ad05#0878e4a8ae6e7f34422bc1e553cf9506d938ad05"
 dependencies = [
  "axiomvault-common",
  "axiomvault-vault",

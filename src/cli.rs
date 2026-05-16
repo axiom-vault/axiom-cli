@@ -300,8 +300,11 @@ pub(crate) enum RemoteCommands {
         #[command(subcommand)]
         command: GdriveCommands,
     },
-    /// iCloud remote support (coming soon).
-    Icloud,
+    /// iCloud Drive remote commands.
+    Icloud {
+        #[command(subcommand)]
+        command: IcloudCommands,
+    },
     /// Dropbox remote support (coming soon).
     Dropbox,
 }
@@ -343,6 +346,34 @@ pub(crate) enum GdriveCommands {
         /// Path to tokens file.
         #[arg(short, long)]
         tokens: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum IcloudCommands {
+    /// Create a vault on iCloud Drive.
+    Create {
+        /// Vault name/identifier.
+        #[arg(short, long)]
+        name: String,
+        /// Optional custom iCloud Drive root path override.
+        #[arg(short = 'r', long)]
+        root_path: Option<PathBuf>,
+        /// Optional subfolder within iCloud Drive for the vault.
+        #[arg(long)]
+        subfolder: Option<String>,
+        /// KDF strength level.
+        #[arg(short, long, value_enum, default_value_t = KdfStrength::Moderate)]
+        strength: KdfStrength,
+    },
+    /// Open a vault on iCloud Drive.
+    Open {
+        /// Optional custom iCloud Drive root path override.
+        #[arg(short = 'r', long)]
+        root_path: Option<PathBuf>,
+        /// Optional subfolder within iCloud Drive for the vault.
+        #[arg(long)]
+        subfolder: Option<String>,
     },
 }
 
@@ -523,6 +554,73 @@ mod tests {
                         command: GdriveCommands::Auth { output, .. },
                     },
             } => assert_eq!(output, PathBuf::from("tokens.json")),
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_remote_icloud_create_command() {
+        let cli = Cli::try_parse_from([
+            "axiom",
+            "remote",
+            "icloud",
+            "create",
+            "--name",
+            "CloudVault",
+            "--root-path",
+            "./icloud-root",
+            "--subfolder",
+            "AxiomVault",
+        ])
+        .expect("remote icloud create should parse");
+
+        match cli.command {
+            Commands::Remote {
+                command:
+                    RemoteCommands::Icloud {
+                        command:
+                            IcloudCommands::Create {
+                                name,
+                                root_path,
+                                subfolder,
+                                strength: KdfStrength::Moderate,
+                            },
+                    },
+            } => {
+                assert_eq!(name, "CloudVault");
+                assert_eq!(root_path, Some(PathBuf::from("./icloud-root")));
+                assert_eq!(subfolder.as_deref(), Some("AxiomVault"));
+            }
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn parses_grouped_remote_icloud_open_command() {
+        let cli = Cli::try_parse_from([
+            "axiom",
+            "remote",
+            "icloud",
+            "open",
+            "--subfolder",
+            "AxiomVault",
+        ])
+        .expect("remote icloud open should parse");
+
+        match cli.command {
+            Commands::Remote {
+                command:
+                    RemoteCommands::Icloud {
+                        command:
+                            IcloudCommands::Open {
+                                root_path,
+                                subfolder,
+                            },
+                    },
+            } => {
+                assert_eq!(root_path, None);
+                assert_eq!(subfolder.as_deref(), Some("AxiomVault"));
+            }
             _ => panic!("unexpected command tree"),
         }
     }
