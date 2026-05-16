@@ -1,0 +1,12 @@
+problem: Create a standalone PR for a local fuse mount fix without mixing it into the hardware-key branch
+approach: Stashed the dirty fuse.rs change, branched from main, restored only that file, extracted a tiny auto-unmount policy helper for testability, and validated both default and fuse-feature test paths
+failed_paths:
+  - Initial gh pr create raced with push because parallel bash ops do not serialize
+verification:
+  - cargo fmt --all --check
+  - cargo test
+  - cargo test --features fuse auto_unmount
+  - git rev-list --left-right --count origin/main...HEAD
+workflow_learning: When using batch bash ops for ship steps, combine dependent git/gh commands in one shell command or run them sequentially
+related_files:
+  - src/commands/fuse.rs
