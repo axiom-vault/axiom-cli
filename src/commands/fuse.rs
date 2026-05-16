@@ -7,6 +7,10 @@ use std::sync::Arc;
 use tokio::runtime::Handle;
 use tracing::info;
 
+fn auto_unmount_enabled(allow_other: bool) -> bool {
+    allow_other
+}
+
 pub(crate) async fn cmd_mount(
     vault_path: &Path,
     mount_point: &Path,
@@ -26,7 +30,9 @@ pub(crate) async fn cmd_mount(
 
     let password = prompt_password("Enter password: ")?;
     let manager = VaultManager::new();
-    let provider_config = serde_json::json!({ "root": vault_path.to_string_lossy() });
+    let provider_config = serde_json::json!({
+        "root": vault_path.to_string_lossy(),
+    });
     let session = manager
         .open_vault("local", provider_config, &password)
         .await
@@ -34,7 +40,9 @@ pub(crate) async fn cmd_mount(
 
     let options = MountOptions {
         allow_other,
-        auto_unmount: true,
+        // fuser rejects AutoUnmount with owner-only ACLs; only enable it when
+        // the mount is shared via allow_other.
+        auto_unmount: auto_unmount_enabled(allow_other),
         read_only,
         default_permissions: !no_default_permissions,
     };
@@ -52,4 +60,19 @@ pub(crate) async fn cmd_mount(
     println!("Unmounting {}", handle.mount_point().display());
     handle.unmount();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::auto_unmount_enabled;
+
+    #[test]
+    fn enables_auto_unmount_for_shared_mounts() {
+        assert!(auto_unmount_enabled(true));
+    }
+
+    #[test]
+    fn disables_auto_unmount_for_owner_only_mounts() {
+        assert!(!auto_unmount_enabled(false));
+    }
 }
