@@ -8,16 +8,17 @@ use url::Url;
 const OAUTH_CALLBACK_ADDR: &str = "127.0.0.1:8080";
 const OAUTH_CALLBACK_URL: &str = "http://localhost:8080";
 
+fn first_non_empty_value(values: [Option<String>; 3]) -> Option<String> {
+    values.into_iter().flatten().find(|value| !value.is_empty())
+}
+
 pub(crate) fn resolve_required_oauth_value(
     flag_value: Option<String>,
     env_value: Option<String>,
     legacy_env_value: Option<String>,
     missing_message: &str,
 ) -> Result<String> {
-    flag_value
-        .filter(|value| !value.is_empty())
-        .or_else(|| env_value.filter(|value| !value.is_empty()))
-        .or_else(|| legacy_env_value.filter(|value| !value.is_empty()))
+    first_non_empty_value([flag_value, env_value, legacy_env_value])
         .ok_or_else(|| anyhow!(missing_message.to_string()))
 }
 
@@ -26,10 +27,7 @@ pub(crate) fn resolve_optional_oauth_value(
     env_value: Option<String>,
     legacy_env_value: Option<String>,
 ) -> Option<String> {
-    flag_value
-        .filter(|value| !value.is_empty())
-        .or_else(|| env_value.filter(|value| !value.is_empty()))
-        .or_else(|| legacy_env_value.filter(|value| !value.is_empty()))
+    first_non_empty_value([flag_value, env_value, legacy_env_value])
 }
 
 pub(crate) async fn complete_local_oauth_flow<T, F, Fut>(
@@ -202,17 +200,27 @@ struct CallbackFailure {
     error: anyhow::Error,
 }
 
+impl CallbackFailure {
+    fn bad_request(browser_message: impl Into<String>, error: anyhow::Error) -> Self {
+        Self {
+            status_line: "400 Bad Request",
+            browser_message: browser_message.into(),
+            error,
+        }
+    }
+}
+
 fn parse_callback(
     path: &str,
     csrf_token: &str,
     provider_name: &str,
 ) -> std::result::Result<OAuthCallback, CallbackFailure> {
     let callback_url = format!("{OAUTH_CALLBACK_URL}{path}");
-    let parsed_url = Url::parse(&callback_url).map_err(|error| CallbackFailure {
-        status_line: "400 Bad Request",
-        browser_message:
-            "The OAuth callback URL was malformed. Please close this window and try again.".into(),
-        error: anyhow::Error::new(error).context("Failed to parse callback URL"),
+    let parsed_url = Url::parse(&callback_url).map_err(|error| {
+        CallbackFailure::bad_request(
+            "The OAuth callback URL was malformed. Please close this window and try again.",
+            anyhow::Error::new(error).context("Failed to parse callback URL"),
+        )
     })?;
 
     let mut code = None;
@@ -234,34 +242,33 @@ fn parse_callback(
         let detail = provider_error_description
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "No additional details were provided by the OAuth provider.".into());
-        return Err(CallbackFailure {
-            status_line: "400 Bad Request",
-            browser_message: format!(
+        return Err(CallbackFailure::bad_request(
+            format!(
                 "{provider_name} returned an authorization error. You can close this window and return to the terminal."
             ),
-            error: anyhow!("{provider_name} authorization failed: {error_code} ({detail})"),
-        });
+            anyhow!("{provider_name} authorization failed: {error_code} ({detail})"),
+        ));
     }
 
-    let received_state = state.ok_or_else(|| CallbackFailure {
-        status_line: "400 Bad Request",
-        browser_message: "The OAuth callback did not include a state parameter. Please close this window and try again.".into(),
-        error: anyhow!("No state parameter received"),
+    let received_state = state.ok_or_else(|| {
+        CallbackFailure::bad_request(
+            "The OAuth callback did not include a state parameter. Please close this window and try again.",
+            anyhow!("No state parameter received"),
+        )
     })?;
 
     if received_state != csrf_token {
-        return Err(CallbackFailure {
-            status_line: "400 Bad Request",
-            browser_message: "Security validation failed. Please close this window and try again."
-                .into(),
-            error: anyhow!("CSRF token mismatch - possible security issue"),
-        });
+        return Err(CallbackFailure::bad_request(
+            "Security validation failed. Please close this window and try again.",
+            anyhow!("CSRF token mismatch - possible security issue"),
+        ));
     }
 
-    let auth_code = code.ok_or_else(|| CallbackFailure {
-        status_line: "400 Bad Request",
-        browser_message: "The OAuth callback did not include an authorization code. Please close this window and try again.".into(),
-        error: anyhow!("No authorization code received"),
+    let auth_code = code.ok_or_else(|| {
+        CallbackFailure::bad_request(
+            "The OAuth callback did not include an authorization code. Please close this window and try again.",
+            anyhow!("No authorization code received"),
+        )
     })?;
 
     Ok(OAuthCallback { auth_code })
