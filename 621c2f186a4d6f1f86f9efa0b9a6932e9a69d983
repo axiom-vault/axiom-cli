@@ -1,0 +1,13 @@
+problem: Apply bounded Claude Code simplify/deslop pass to iCloud CLI PR #14 without changing behavior
+approach: Locked behavior with targeted iCloud tests first, then simplified repeated subfolder normalization and test error/cleanup assertions in src/commands/icloud.rs only
+failed_paths:
+  - Using Result::expect_err introduced Debug trait bounds on VaultCreation/VaultSession, so tests were switched to a local unwrap_icloud_error helper under #[cfg(test)]
+verification:
+  - cargo test -q icloud
+  - cargo fmt --all --check
+  - cargo clippy --all-targets --all-features -- -D warnings
+  - cargo test -q
+  - git diff --check
+workflow_learning: For cleanup passes on security-adjacent CLI commands, prefer tiny in-file deduplication plus test-only helpers over broader command wiring changes
+related_files:
+  - src/commands/icloud.rs
