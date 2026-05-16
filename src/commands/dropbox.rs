@@ -53,7 +53,6 @@ pub(crate) async fn cmd_dropbox_auth(
     };
     let auth_manager =
         DropboxAuthManager::new(auth_config).context("Failed to create Dropbox auth manager")?;
-
     let CloudAuthorization {
         url: auth_url,
         csrf_token,
@@ -62,24 +61,23 @@ pub(crate) async fn cmd_dropbox_auth(
 
     let tokens =
         complete_local_oauth_flow("Dropbox", &auth_url, &csrf_token, |auth_code| async move {
-            auth_manager
+            let tokens = auth_manager
                 .exchange_code(&auth_code, pkce_verifier)
                 .await
-                .context("Failed to exchange authorization code")
+                .context("Failed to exchange authorization code")?;
+            let tokens_json = serde_json::to_string_pretty(&tokens)
+                .context("Failed to serialize Dropbox tokens")?;
+            write_secret_file(output, &tokens_json).await?;
+            Ok(tokens)
         })
         .await?;
 
-    let tokens_json =
-        serde_json::to_string_pretty(&tokens).context("Failed to serialize Dropbox tokens")?;
-    write_secret_file(output, &tokens_json).await?;
-
     println!();
     println!("Authentication successful!");
-    println!("  Tokens saved to: {}", output.display());
-    println!("  Expires at: {}", tokens.expires_at);
+    println!(" Tokens saved to: {}", output.display());
+    println!(" Expires at: {}", tokens.expires_at);
     println!();
     println!("You can now use 'axiom remote dropbox create' or 'axiom remote dropbox open'");
-
     Ok(())
 }
 
@@ -107,6 +105,7 @@ pub(crate) async fn cmd_dropbox_create(
 
     let vault_id = VaultId::new(name).context("Invalid vault name")?;
     let manager = VaultManager::new();
+
     let dropbox_config = DropboxConfig {
         root_path: root_path.to_string(),
         tokens,
@@ -121,11 +120,10 @@ pub(crate) async fn cmd_dropbox_create(
         .context("Failed to create vault on Dropbox")?;
 
     println!("Vault created successfully on Dropbox!");
-    println!("  ID: {}", creation.session.vault_id());
-    println!("  Root path: {}", root_path);
-    println!("  Provider: {}", creation.session.config().provider_type);
+    println!(" ID: {}", creation.session.vault_id());
+    println!(" Root path: {}", root_path);
+    println!(" Provider: {}", creation.session.config().provider_type);
     display_recovery_words(&creation.recovery_words);
-
     Ok(())
 }
 
@@ -133,7 +131,6 @@ pub(crate) async fn cmd_dropbox_open(root_path: &str, tokens_path: &Path) -> Res
     info!("Opening vault on Dropbox");
 
     let password = prompt_password("Enter password: ")?;
-
     let tokens_json = tokio::fs::read_to_string(tokens_path)
         .await
         .context("Failed to read tokens file")?;
@@ -155,10 +152,9 @@ pub(crate) async fn cmd_dropbox_open(root_path: &str, tokens_path: &Path) -> Res
         .context("Failed to open vault on Dropbox")?;
 
     println!("Vault opened successfully from Dropbox!");
-    println!("  ID: {}", session.vault_id());
-    println!("  Session: {}", session.handle().as_str());
+    println!(" ID: {}", session.vault_id());
+    println!(" Session: {}", session.handle().as_str());
     println!("\nVault is ready for operations.");
-
     Ok(())
 }
 
@@ -173,7 +169,7 @@ mod tests {
                 None,
                 Some("primary-app-key".into()),
                 Some("legacy-app-key".into()),
-                "missing"
+                "missing",
             )
             .unwrap(),
             "primary-app-key"

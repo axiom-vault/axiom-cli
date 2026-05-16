@@ -50,7 +50,6 @@ pub(crate) async fn cmd_gdrive_auth(
         redirect_url: GDRIVE_REDIRECT_URL.to_string(),
     };
     let auth_manager = AuthManager::new(auth_config).context("Failed to create auth manager")?;
-
     let CloudAuthorization {
         url: auth_url,
         csrf_token,
@@ -62,25 +61,24 @@ pub(crate) async fn cmd_gdrive_auth(
         &auth_url,
         &csrf_token,
         |auth_code| async move {
-            auth_manager
+            let tokens = auth_manager
                 .exchange_code(&auth_code, pkce_verifier)
                 .await
-                .context("Failed to exchange authorization code")
+                .context("Failed to exchange authorization code")?;
+            let tokens_json =
+                serde_json::to_string_pretty(&tokens).context("Failed to serialize tokens")?;
+            write_secret_file(output, &tokens_json).await?;
+            Ok(tokens)
         },
     )
     .await?;
 
-    let tokens_json =
-        serde_json::to_string_pretty(&tokens).context("Failed to serialize tokens")?;
-    write_secret_file(output, &tokens_json).await?;
-
     println!();
     println!("Authentication successful!");
-    println!("  Tokens saved to: {}", output.display());
-    println!("  Expires at: {}", tokens.expires_at);
+    println!(" Tokens saved to: {}", output.display());
+    println!(" Expires at: {}", tokens.expires_at);
     println!();
     println!("You can now use 'axiom remote gdrive create' or 'axiom remote gdrive open'");
-
     Ok(())
 }
 
@@ -108,13 +106,14 @@ pub(crate) async fn cmd_gdrive_create(
 
     let vault_id = VaultId::new(name).context("Invalid vault name")?;
     let manager = VaultManager::new();
+
     let gdrive_config = GDriveConfig {
         folder_id: folder_id.to_string(),
         tokens,
         auth_config: None,
     };
     let provider_config =
-        serde_json::to_value(gdrive_config).context("Failed to serialize GDrive config")?;
+        serde_json::to_value(gdrive_config).context("Failed to serialize Google Drive config")?;
 
     let creation = manager
         .create_vault(vault_id, &password, "gdrive", provider_config, kdf_params)
@@ -122,11 +121,10 @@ pub(crate) async fn cmd_gdrive_create(
         .context("Failed to create vault on Google Drive")?;
 
     println!("Vault created successfully on Google Drive!");
-    println!("  ID: {}", creation.session.vault_id());
-    println!("  Folder ID: {}", folder_id);
-    println!("  Provider: {}", creation.session.config().provider_type);
+    println!(" ID: {}", creation.session.vault_id());
+    println!(" Folder ID: {}", folder_id);
+    println!(" Provider: {}", creation.session.config().provider_type);
     display_recovery_words(&creation.recovery_words);
-
     Ok(())
 }
 
@@ -134,7 +132,6 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: &Path) -> Resu
     info!("Opening vault on Google Drive");
 
     let password = prompt_password("Enter password: ")?;
-
     let tokens_json = tokio::fs::read_to_string(tokens_path)
         .await
         .context("Failed to read tokens file")?;
@@ -147,7 +144,7 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: &Path) -> Resu
         auth_config: None,
     };
     let provider_config =
-        serde_json::to_value(gdrive_config).context("Failed to serialize GDrive config")?;
+        serde_json::to_value(gdrive_config).context("Failed to serialize Google Drive config")?;
 
     let manager = VaultManager::new();
     let session = manager
@@ -156,9 +153,35 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: &Path) -> Resu
         .context("Failed to open vault on Google Drive")?;
 
     println!("Vault opened successfully from Google Drive!");
-    println!("  ID: {}", session.vault_id());
-    println!("  Session: {}", session.handle().as_str());
+    println!(" ID: {}", session.vault_id());
+    println!(" Session: {}", session.handle().as_str());
     println!("\nVault is ready for operations.");
-
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_gdrive_client_id_prefers_primary_env_name() {
+        assert_eq!(
+            resolve_required_oauth_value(
+                None,
+                Some("primary-client-id".into()),
+                Some("legacy-client-id".into()),
+                "missing",
+            )
+            .unwrap(),
+            "primary-client-id"
+        );
+    }
+
+    #[test]
+    fn resolve_gdrive_client_secret_falls_back_to_legacy_value() {
+        assert_eq!(
+            resolve_optional_oauth_value(None, None, Some("legacy-secret".into())),
+            Some("legacy-secret".into())
+        );
+    }
 }
