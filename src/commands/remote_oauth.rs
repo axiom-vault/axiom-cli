@@ -158,6 +158,11 @@ where
         tokio::fs::rename(&temp_path, path)
             .await
             .context("Failed to atomically replace token file")?;
+        // Durability requires syncing the parent directory after rename so the
+        // directory entry for the new token file is persisted before success.
+        sync_parent_directory(path)
+            .await
+            .context("Failed to flush token parent directory to disk")?;
         Ok(())
     }
 
@@ -169,6 +174,21 @@ where
         )?;
         Ok(())
     }
+}
+
+#[cfg(unix)]
+async fn sync_parent_directory(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("Token path has no parent directory"))?;
+    let directory = tokio::fs::File::open(parent)
+        .await
+        .context("Failed to open token parent directory")?;
+    directory
+        .sync_all()
+        .await
+        .context("Failed to sync token parent directory")?;
+    Ok(())
 }
 
 #[derive(Debug)]
