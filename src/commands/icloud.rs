@@ -40,8 +40,8 @@ async fn create_icloud_vault(
 ) -> Result<VaultCreation> {
     let vault_id = VaultId::new(name).context("Invalid vault name")?;
     let provider_config = serialize_icloud_config(root_path, subfolder)?;
-    let manager = VaultManager::new();
-    manager
+
+    VaultManager::new()
         .create_vault(
             vault_id,
             password,
@@ -59,8 +59,8 @@ async fn open_icloud_vault(
     password: &[u8],
 ) -> Result<VaultSession> {
     let provider_config = serialize_icloud_config(root_path, subfolder)?;
-    let manager = VaultManager::new();
-    manager
+
+    VaultManager::new()
         .open_vault("icloud", provider_config, password)
         .await
         .context("Failed to open vault on iCloud")
@@ -82,19 +82,27 @@ pub(crate) async fn cmd_icloud_create(
 
     validate_password_strength(&password)?;
 
-    let creation = create_icloud_vault(name, root_path, subfolder, &password, strength).await?;
+    let normalized_subfolder = normalize_subfolder(subfolder);
+    let creation = create_icloud_vault(
+        name,
+        root_path,
+        normalized_subfolder.as_deref(),
+        &password,
+        strength,
+    )
+    .await?;
 
     println!("Vault created successfully on iCloud!");
     println!(" ID: {}", creation.session.vault_id());
     println!(" Provider: {}", creation.session.config().provider_type);
-    if let Some(root_path) = root_path {
-        println!(" Root path: {}", root_path.display());
-    } else {
-        println!(" Root path: auto-detected iCloud Drive");
+    match root_path {
+        Some(root_path) => println!(" Root path: {}", root_path.display()),
+        None => println!(" Root path: auto-detected iCloud Drive"),
     }
-    if let Some(subfolder) = normalize_subfolder(subfolder) {
+    if let Some(subfolder) = normalized_subfolder.as_deref() {
         println!(" Subfolder: {}", subfolder);
     }
+
     display_recovery_words(&creation.recovery_words);
     Ok(())
 }
@@ -118,12 +126,41 @@ pub(crate) async fn cmd_icloud_open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn assert_error_contains(error: &anyhow::Error, expected: &str) {
+        assert!(
+            format!("{error:#}").contains(expected),
+            "expected error to contain {expected:?}: {error:#}",
+        );
+    }
+
+    fn unwrap_icloud_error<T>(result: Result<T>, message: &str) -> anyhow::Error {
+        match result {
+            Ok(_) => panic!("{message}"),
+            Err(error) => error,
+        }
+    }
+
+    async fn cleanup_temp_root(root: &Path) {
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    fn temp_test_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "axiom-icloud-test-{label}-{}-{unique}",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn build_icloud_config_trims_empty_subfolder() {
-        let config = build_icloud_config(Some(Path::new("/tmp/icloud")), Some("  "));
-
+        let config = build_icloud_config(Some(Path::new("/tmp/icloud")), Some(" "));
         assert_eq!(config.root_path.as_deref(), Some("/tmp/icloud"));
         assert_eq!(config.subfolder, None);
     }
@@ -131,23 +168,20 @@ mod tests {
     #[tokio::test]
     async fn create_icloud_vault_rejects_absolute_subfolder() {
         let root = temp_test_path("reject-absolute");
+        let error = unwrap_icloud_error(
+            create_icloud_vault(
+                "CloudVault",
+                Some(root.as_path()),
+                Some("/escape"),
+                b"correct-horse-battery-staple",
+                KdfStrength::Interactive,
+            )
+            .await,
+            "absolute subfolder should fail",
+        );
 
-        let error = match create_icloud_vault(
-            "CloudVault",
-            Some(root.as_path()),
-            Some("/escape"),
-            b"correct-horse-battery-staple",
-            KdfStrength::Interactive,
-        )
-        .await
-        {
-            Ok(_) => panic!("absolute subfolder should fail"),
-            Err(error) => error,
-        };
-
-        let error_chain = format!("{error:#}");
-        assert!(error_chain.contains("Failed to create vault on iCloud"));
-        assert!(error_chain.contains("relative path"));
+        assert_error_contains(&error, "Failed to create vault on iCloud");
+        assert_error_contains(&error, "relative path");
         assert!(!root.join("escape").exists());
     }
 
@@ -156,21 +190,19 @@ mod tests {
         let root = temp_test_path("reject-traversal");
         tokio::fs::create_dir_all(&root).await.unwrap();
 
-        let error = match open_icloud_vault(
-            Some(root.as_path()),
-            Some("safe/../escape"),
-            b"correct-horse-battery-staple",
-        )
-        .await
-        {
-            Ok(_) => panic!("parent traversal subfolder should fail"),
-            Err(error) => error,
-        };
+        let error = unwrap_icloud_error(
+            open_icloud_vault(
+                Some(root.as_path()),
+                Some("safe/../escape"),
+                b"correct-horse-battery-staple",
+            )
+            .await,
+            "parent traversal subfolder should fail",
+        );
 
-        let error_chain = format!("{error:#}");
-        assert!(error_chain.contains("Failed to open vault on iCloud"));
-        assert!(error_chain.contains("'.' or '..'"));
-        let _ = tokio::fs::remove_dir_all(&root).await;
+        assert_error_contains(&error, "Failed to open vault on iCloud");
+        assert_error_contains(&error, "'.' or '..'");
+        cleanup_temp_root(&root).await;
     }
 
     #[tokio::test]
@@ -195,21 +227,9 @@ mod tests {
         let session = open_icloud_vault(Some(root.as_path()), Some("AxiomVault"), password)
             .await
             .unwrap();
-
         assert_eq!(session.config().provider_type, "icloud");
         assert_eq!(session.vault_id().to_string(), "CloudVault");
 
-        let _ = tokio::fs::remove_dir_all(&root).await;
-    }
-
-    fn temp_test_path(label: &str) -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "axiom-icloud-test-{label}-{}-{unique}",
-            std::process::id()
-        ))
+        cleanup_temp_root(&root).await;
     }
 }
