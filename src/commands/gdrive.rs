@@ -6,15 +6,16 @@ use crate::password::{
 };
 use crate::security::publish_sensitive_file;
 use anyhow::{Context, Result};
-use axiomvault_common::{VaultId, VaultPath};
+use axiomvault_common::{Error as CoreError, VaultId, VaultPath};
 use axiomvault_crypto::recovery::RecoveryKey;
 use axiomvault_crypto::KdfParams;
-use axiomvault_storage::gdrive::{AuthConfig, AuthManager, GDriveConfig, Tokens};
+use axiomvault_storage::gdrive::{AuthConfig, AuthManager, Tokens};
 use axiomvault_storage::{
     create_default_registry, CloudAuthorization, CompositeConfig, CompositeStorageProvider,
     HealthStatus, RaidMode, RaidRebuilder, RebuildConfig, RebuildResult,
 };
 use axiomvault_sync::{ConflictStrategy, SyncConfig, SyncEngine, SyncMode, SyncState};
+use axiomvault_vault::manager::LocalCredentialResolver;
 use axiomvault_vault::{
     check_migration_needed, check_vault_health, check_vault_structure, MigrationRegistry,
     MigrationStatus, VaultConfig, VaultManager, VaultOperations, VaultVersion,
@@ -26,6 +27,54 @@ use tokio::net::TcpListener;
 use tracing::info;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
+
+struct TokenFileCredentialResolver;
+
+impl LocalCredentialResolver for TokenFileCredentialResolver {
+    fn resolve(
+        &self,
+        provider_type: &str,
+        credential_ref: &str,
+    ) -> axiomvault_common::Result<serde_json::Value> {
+        if provider_type != "gdrive" {
+            return Err(CoreError::InvalidInput(format!(
+                "unsupported local credential provider '{provider_type}'"
+            )));
+        }
+        let path = Path::new(credential_ref);
+        let bytes = std::fs::read(path).map_err(|error| {
+            CoreError::InvalidInput(format!(
+                "could not read local Google Drive credential '{}': {error}; authenticate again with 'axiom remote gdrive auth'",
+                path.display()
+            ))
+        })?;
+        let tokens: Tokens = serde_json::from_slice(&bytes).map_err(|error| {
+            CoreError::InvalidInput(format!(
+                "local Google Drive credential '{}' is invalid: {error}; authenticate again with 'axiom remote gdrive auth'",
+                path.display()
+            ))
+        })?;
+        Ok(serde_json::json!({ "tokens": tokens }))
+    }
+}
+
+fn gdrive_provider_config(folder_id: &str, tokens_path: &Path) -> Result<serde_json::Value> {
+    let credential_ref = tokens_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Google Drive credential path must be valid UTF-8"))?;
+    Ok(serde_json::json!({
+        "folder_id": folder_id,
+        "credential_schema": 1,
+        "credential_ref": credential_ref,
+    }))
+}
+
+fn gdrive_manager() -> VaultManager {
+    VaultManager::with_registry_and_credential_resolver(
+        create_default_registry(),
+        Arc::new(TokenFileCredentialResolver),
+    )
+}
 
 pub(crate) async fn cmd_gdrive_auth(
     client_id: Option<String>,
@@ -214,25 +263,9 @@ pub(crate) async fn cmd_gdrive_create(
 
     validate_password_strength(&password)?;
 
-    // Load tokens
-    let tokens_json = tokio::fs::read_to_string(tokens_path)
-        .await
-        .context("Failed to read tokens file")?;
-    let tokens: Tokens =
-        serde_json::from_str(&tokens_json).context("Failed to parse tokens file")?;
-
     let vault_id = VaultId::new(name).context("Invalid vault name")?;
-
-    let manager = VaultManager::new();
-
-    let gdrive_config = GDriveConfig {
-        folder_id: folder_id.to_string(),
-        tokens,
-        auth_config: None,
-    };
-
-    let provider_config =
-        serde_json::to_value(gdrive_config).context("Failed to serialize GDrive config")?;
+    let manager = gdrive_manager();
+    let provider_config = gdrive_provider_config(folder_id, tokens_path)?;
 
     let creation = manager
         .create_vault(vault_id, &password, "gdrive", provider_config, kdf_params)
@@ -254,23 +287,8 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: &Path) -> Resu
 
     let password = prompt_password("Enter password: ")?;
 
-    // Load tokens
-    let tokens_json = tokio::fs::read_to_string(tokens_path)
-        .await
-        .context("Failed to read tokens file")?;
-    let tokens: Tokens =
-        serde_json::from_str(&tokens_json).context("Failed to parse tokens file")?;
-
-    let gdrive_config = GDriveConfig {
-        folder_id: folder_id.to_string(),
-        tokens,
-        auth_config: None,
-    };
-
-    let provider_config =
-        serde_json::to_value(gdrive_config).context("Failed to serialize GDrive config")?;
-
-    let manager = VaultManager::new();
+    let provider_config = gdrive_provider_config(folder_id, tokens_path)?;
+    let manager = gdrive_manager();
 
     let session = manager
         .open_vault("gdrive", provider_config, &password)
@@ -281,6 +299,67 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: &Path) -> Resu
     println!("  ID: {}", session.vault_id());
     println!("  Session: {}", session.handle().as_str());
     println!("\nVault is ready for operations.");
+    println!(
+        "Security note: if this vault previously stored OAuth tokens in its portable config, rotate those credentials after this sanitized open."
+    );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axiomvault_vault::manager::LocalCredentialResolver;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_token_file(contents: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("axiom-cli-token-{unique}.json"));
+        fs::write(&path, contents).expect("token fixture should be written");
+        path
+    }
+
+    #[test]
+    fn gdrive_provider_config_is_secret_free() {
+        let path = Path::new("/local/private/tokens.json");
+        let config = gdrive_provider_config("folder", path).unwrap();
+
+        assert_eq!(config["folder_id"], "folder");
+        assert_eq!(config["credential_schema"], 1);
+        assert_eq!(config["credential_ref"], path.to_string_lossy().as_ref());
+        assert!(config.get("tokens").is_none());
+        assert!(config.get("auth_config").is_none());
+    }
+
+    #[test]
+    fn local_resolver_reads_tokens_without_adding_them_to_portable_config() {
+        let path = temp_token_file(
+            r#"{"access_token":"test-access","refresh_token":"test-refresh","expires_at":"2099-01-01T00:00:00Z","token_type":"Bearer"}"#,
+        );
+        let resolver = TokenFileCredentialResolver;
+
+        let resolved = resolver
+            .resolve("gdrive", path.to_string_lossy().as_ref())
+            .unwrap();
+
+        assert_eq!(resolved["tokens"]["access_token"], "test-access");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn missing_local_credential_reference_is_actionable() {
+        let resolver = TokenFileCredentialResolver;
+        let missing = std::env::temp_dir().join("axiom-cli-definitely-missing-token.json");
+
+        let error = resolver
+            .resolve("gdrive", missing.to_string_lossy().as_ref())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("local Google Drive credential"));
+        assert!(error.to_string().contains("authenticate again"));
+    }
 }

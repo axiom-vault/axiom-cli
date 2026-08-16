@@ -12,6 +12,15 @@ CORE_DEPENDENCY = re.compile(
     re.MULTILINE,
 )
 REVISION = re.compile(r'\brev\s*=\s*"([0-9A-Za-z._/-]+)"')
+EXPECTED_CORE_CRATES = {
+    "axiomvault-common",
+    "axiomvault-crypto",
+    "axiomvault-storage",
+    "axiomvault-vault",
+    "axiomvault-sync",
+    "axiomvault-webdav",
+    "axiomvault-fuse",
+}
 
 
 def core_revisions(manifest: str) -> set[str]:
@@ -38,6 +47,12 @@ def validate_manifest(manifest: str) -> str:
     if len(revisions) != 1:
         raise ValueError(
             "axiom-core dependency revisions diverge: " + ", ".join(sorted(revisions))
+        )
+    crates = {crate for crate, _body in dependencies}
+    missing_crates = EXPECTED_CORE_CRATES - crates
+    if missing_crates:
+        raise ValueError(
+            "missing axiom-core dependencies: " + ", ".join(sorted(missing_crates))
         )
     return next(iter(revisions))
 

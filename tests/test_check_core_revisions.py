@@ -36,6 +36,26 @@ axiomvault-vault = { git = "https://github.com/axiom-vault/axiom-core", rev = "d
         with self.assertRaisesRegex(ValueError, "exact rev"):
             module.validate_manifest(manifest)
 
+    def test_rejects_a_manifest_missing_any_of_the_seven_core_crates(self):
+        manifest = "\n".join(
+            f'{crate} = {{ git = "https://github.com/axiom-vault/axiom-core", rev = "abc" }}'
+            for crate in sorted(module.EXPECTED_CORE_CRATES - {"axiomvault-webdav"})
+        )
+        with self.assertRaisesRegex(ValueError, "missing axiom-core dependencies.*webdav"):
+            module.validate_manifest(manifest)
+
+    def test_compatibility_workflow_is_bound_to_reviewed_core_sha(self):
+        workflow = (
+            pathlib.Path(__file__).parents[1]
+            / ".github"
+            / "workflows"
+            / "core-compatibility.yml"
+        ).read_text(encoding="utf-8")
+        reviewed_sha = "4240839a769106f03172a928f5cf24fb01a38704"
+        self.assertIn(f"AXIOM_CORE_SHA: {reviewed_sha}", workflow)
+        self.assertIn('ref: ${{ env.AXIOM_CORE_SHA }}', workflow)
+        self.assertNotIn("inputs.core_ref", workflow)
+
     def test_rewrites_every_core_dependency_to_local_checkout(self):
         manifest = """
 axiomvault-common = { git = "https://github.com/axiom-vault/axiom-core", rev = "abc" }

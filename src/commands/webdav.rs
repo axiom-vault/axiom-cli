@@ -26,6 +26,17 @@ use tracing::info;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
+fn webdav_client_instructions(url: &str, username: &str, password: &str) -> Zeroizing<String> {
+    Zeroizing::new(format!(
+        "WebDAV server running at {url}/\n\
+         Client configuration (shown once):\n\
+           URL: {url}/\n\
+           Username: {username}\n\
+           Password: {password}\n\
+         This credential is valid only while this mount process is running."
+    ))
+}
+
 pub(crate) async fn cmd_webdav(path: &Path, port: u16) -> Result<()> {
     info!("Starting WebDAV server for vault at: {}", path.display());
 
@@ -52,12 +63,35 @@ pub(crate) async fn cmd_webdav(path: &Path, port: u16) -> Result<()> {
 
     let server = axiomvault_webdav::WebDavServer::new(session, config);
     let url = server.url();
+    let instructions = webdav_client_instructions(
+        &url,
+        server.credential().username(),
+        server.credential().password(),
+    );
 
-    println!("WebDAV server running at {}/", url);
+    println!("{}", instructions.as_str());
     println!("Press Ctrl+C to stop.");
 
     server
         .start()
         .await
         .map_err(|e| anyhow::anyhow!("WebDAV server error: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_instructions_display_the_session_password_once() {
+        let instructions = webdav_client_instructions(
+            "http://127.0.0.1:8080",
+            "axiomvault",
+            "one-time-session-password",
+        );
+
+        assert_eq!(instructions.matches("one-time-session-password").count(), 1);
+        assert!(instructions.contains("Username: axiomvault"));
+        assert!(instructions.contains("valid only while this mount process is running"));
+    }
 }
