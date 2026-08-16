@@ -1,0 +1,59 @@
+name: axiom-core compatibility
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: axiom-core branch, tag, or commit to test
+        required: true
+        default: main
+        type: string
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pinned-revision:
+    name: Pinned revision consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify all core crates use one exact revision
+        run: |
+          python3 -m unittest tests/test_check_core_revisions.py
+          python3 scripts/check_core_revisions.py Cargo.toml
+
+  integration-head:
+    name: Core integration head
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out CLI
+        uses: actions/checkout@v6
+        with:
+          path: cli
+      - name: Check out axiom-core
+        uses: actions/checkout@v6
+        with:
+          repository: axiom-vault/axiom-core
+          ref: ${{ inputs.core_ref || 'main' }}
+          path: axiom-core
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Point core crates at the integration checkout
+        working-directory: cli
+        run: python3 scripts/use_local_core.py ../axiom-core Cargo.toml
+      - name: Build and test against integration head
+        working-directory: cli
+        run: cargo test --all-targets --all-features --verbose
+      - name: Clippy against integration head
+        working-directory: cli
+        run: cargo clippy --all-targets --all-features -- -D warnings

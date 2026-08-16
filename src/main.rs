@@ -9,6 +9,7 @@ mod completions;
 mod conversions;
 mod dispatch;
 mod password;
+mod security;
 
 use anyhow::Result;
 use clap::Parser;

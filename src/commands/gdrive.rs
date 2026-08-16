@@ -4,6 +4,7 @@ use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
 };
+use crate::security::publish_sensitive_file;
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
 use axiomvault_crypto::recovery::RecoveryKey;
@@ -175,30 +176,13 @@ pub(crate) async fn cmd_gdrive_auth(
     let tokens_json =
         serde_json::to_string_pretty(&tokens).context("Failed to serialize tokens")?;
 
-    // Remove any stale file so the new one is created fresh with 0o600.
-    // The mode flag in OpenOptions only applies on creation.
-    let _ = tokio::fs::remove_file(output).await;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(output)
-            .await
-            .context("Failed to create token file")?;
-        f.write_all(tokens_json.as_bytes())
-            .await
-            .context("Failed to write tokens file")?;
-    }
-    #[cfg(not(unix))]
-    {
-        tokio::fs::write(output, &tokens_json)
-            .await
-            .context("Failed to write tokens file")?;
-    }
+    let output_path = output.clone();
+    tokio::task::spawn_blocking(move || {
+        publish_sensitive_file(&output_path, tokens_json.as_bytes())
+    })
+    .await
+    .context("Secure token publication task failed")?
+    .context("Failed to publish token file privately without clobbering")?;
 
     println!();
     println!("Authentication successful!");

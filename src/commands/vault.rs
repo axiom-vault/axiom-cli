@@ -4,6 +4,7 @@ use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
 };
+use crate::security::publish_sensitive_file;
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
 use axiomvault_crypto::recovery::RecoveryKey;
@@ -193,14 +194,17 @@ pub(crate) async fn cmd_extract(vault_path: &Path, source: &str, dest: &Path) ->
         .await
         .context("Failed to read file from vault")?;
 
-    tokio::fs::write(dest, &content)
+    let content_len = content.len();
+    let destination = dest.to_path_buf();
+    tokio::task::spawn_blocking(move || publish_sensitive_file(&destination, &content))
         .await
-        .context("Failed to write output file")?;
+        .context("Secure output publication task failed")?
+        .context("Failed to publish output privately without clobbering")?;
 
     println!(
         "File extracted successfully: {} ({} bytes)",
         dest.display(),
-        content.len()
+        content_len
     );
 
     Ok(())
