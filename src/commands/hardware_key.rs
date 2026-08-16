@@ -273,7 +273,7 @@ mod tests {
 
     const PASSWORD: &str = "test-password";
     const ENROLLED_RESPONSE: &str = "hex:73696d756c617465642d796b2d726573706f6e7365";
-    const WRONG_RESPONSE: &str = "hex:77726f6e672d726573706f6e7365";
+    const WRONG_RESPONSE: &str = "hex:77726f6e672d726573706f6e73652d6c6f6e672d656e6f756768";
 
     #[test]
     fn decodes_plaintext_secret() {
@@ -354,9 +354,12 @@ mod tests {
 
         let _env = TestEnv::set(PASSWORD, Some(WRONG_RESPONSE), None);
         let test_err = cmd_test(temp_vault.path()).await.unwrap_err();
-        assert!(test_err
-            .to_string()
-            .contains("Hardware-key response did not verify"));
+        assert!(
+            test_err
+                .to_string()
+                .contains("Hardware-key response did not verify"),
+            "unexpected error: {test_err:#}"
+        );
 
         let open_err = cmd_open(temp_vault.path()).await.unwrap_err();
         assert!(open_err

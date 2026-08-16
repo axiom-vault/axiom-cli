@@ -1,0 +1,57 @@
+name: axiom-core compatibility
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  AXIOM_CORE_SHA: 4240839a769106f03172a928f5cf24fb01a38704
+
+jobs:
+  pinned-revision:
+    name: Pinned revision consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify all core crates use one exact revision
+        run: |
+          python3 -m unittest tests/test_check_core_revisions.py
+          python3 scripts/check_core_revisions.py Cargo.toml
+
+  integration-head:
+    name: Core integration 4240839a
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out CLI
+        uses: actions/checkout@v6
+        with:
+          path: cli
+      - name: Check out axiom-core
+        uses: actions/checkout@v6
+        with:
+          repository: axiom-vault/axiom-core
+          ref: ${{ env.AXIOM_CORE_SHA }}
+          path: axiom-core
+      - name: Verify exact axiom-core checkout
+        working-directory: axiom-core
+        run: test "$(git rev-parse HEAD)" = "$AXIOM_CORE_SHA"
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Point core crates at the integration checkout
+        working-directory: cli
+        run: python3 scripts/use_local_core.py ../axiom-core Cargo.toml
+      - name: Build and test against integration head
+        working-directory: cli
+        run: cargo test --all-targets --all-features --verbose
+      - name: Clippy against integration head
+        working-directory: cli
+        run: cargo clippy --all-targets --all-features -- -D warnings
