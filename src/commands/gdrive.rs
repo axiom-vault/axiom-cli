@@ -30,7 +30,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub(crate) async fn cmd_gdrive_auth(
     client_id: Option<String>,
     client_secret: Option<String>,
-    output: &PathBuf,
+    output: &Path,
 ) -> Result<()> {
     info!("Starting Google Drive authentication");
 
@@ -176,7 +176,7 @@ pub(crate) async fn cmd_gdrive_auth(
     let tokens_json =
         serde_json::to_string_pretty(&tokens).context("Failed to serialize tokens")?;
 
-    let output_path = output.clone();
+    let output_path = output.to_path_buf();
     tokio::task::spawn_blocking(move || {
         publish_sensitive_file(&output_path, tokens_json.as_bytes())
     })
