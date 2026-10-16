@@ -185,7 +185,7 @@ fn decode_hex_secret(value: &str) -> Result<Vec<u8>> {
     }
 
     let mut bytes = Vec::with_capacity(cleaned.len() / 2);
-    for pair in cleaned.as_bytes().chunks_exact(2) {
+    for pair in cleaned.as_bytes().as_chunks::<2>().0 {
         let hi = decode_hex_nibble(pair[0] as char)?;
         let lo = decode_hex_nibble(pair[1] as char)?;
         bytes.push((hi << 4) | lo);
