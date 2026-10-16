@@ -14,7 +14,11 @@ INSTALL_DIR_OVERRIDE=""
 COMPLETIONS_SHELL=""
 UPDATE_SHELL_PROFILE=0
 FROM_SOURCE=0
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# Empty when piped (curl ... | bash): there is no script file on disk.
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+fi
 
 say() {
   printf '\033[1;32m==>\033[0m %s\n' "$*"
@@ -95,6 +99,7 @@ is_true() {
 is_repo_checkout() {
   local repo_root expected_repo_line
 
+  [ -n "${SCRIPT_DIR}" ] || return 1
   command -v git >/dev/null 2>&1 || return 1
   [ -f "${SCRIPT_DIR}/Cargo.toml" ] || return 1
 
@@ -391,7 +396,8 @@ pick_install_dir() {
 }
 
 install_release() {
-  local os arch target version tarball base_url tmpdir expected actual
+  # tmpdir stays global so the EXIT trap can still see it after return.
+  local os arch target version tarball base_url expected actual
 
   need curl
   need tar
@@ -418,7 +424,8 @@ install_release() {
 
   say "Verifying checksum..."
   if command -v sha256sum >/dev/null 2>&1; then
-    grep " ${tarball}$" "${tmpdir}/SHA256SUMS" | sha256sum --check --quiet
+    (cd "${tmpdir}" && grep " ${tarball}$" SHA256SUMS | sha256sum --check --quiet) || \
+      die "Checksum mismatch for ${tarball}"
   else
     expected="$(grep " ${tarball}$" "${tmpdir}/SHA256SUMS" | awk '{print $1}')"
     actual="$(shasum -a 256 "${tmpdir}/${tarball}" | awk '{print $1}')"
