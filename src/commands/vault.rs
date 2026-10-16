@@ -137,11 +137,6 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
     let password = prompt_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
-    // Read source file
-    let content = tokio::fs::read(source)
-        .await
-        .context("Failed to read source file")?;
-
     let manager = VaultManager::new();
     let provider_config = serde_json::json!({
         "root": path_str
@@ -155,14 +150,16 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
     let ops = VaultOperations::new(&session)?;
     let dest_path = VaultPath::parse(dest).context("Invalid destination path")?;
 
-    ops.create_file(&dest_path, &content)
+    // Streams the source through encryption so large files never sit in memory.
+    ops.create_file_from_path(&dest_path, source)
         .await
         .context("Failed to add file")?;
+    let (_, _, size) = ops.metadata(&dest_path).await?;
 
     println!(
         "File added successfully: {} ({} bytes)",
         dest,
-        content.len()
+        size.unwrap_or_default()
     );
 
     Ok(())
@@ -188,19 +185,19 @@ pub(crate) async fn cmd_extract(vault_path: &Path, source: &str, dest: &Path) ->
     let ops = VaultOperations::new(&session)?;
     let source_path = VaultPath::parse(source).context("Invalid source path")?;
 
-    let content = ops
-        .read_file(&source_path)
+    // Streams the decrypted content to disk; refuses to overwrite an existing file.
+    ops.export_file_to_path(&source_path, dest)
         .await
-        .context("Failed to read file from vault")?;
-
-    tokio::fs::write(dest, &content)
+        .context("Failed to extract file from vault")?;
+    let size = tokio::fs::metadata(dest)
         .await
-        .context("Failed to write output file")?;
+        .context("Failed to inspect output file")?
+        .len();
 
     println!(
         "File extracted successfully: {} ({} bytes)",
         dest.display(),
-        content.len()
+        size
     );
 
     Ok(())

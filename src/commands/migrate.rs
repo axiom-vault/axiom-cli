@@ -37,7 +37,7 @@ pub(crate) async fn cmd_migrate(path: &Path, dry_run: bool) -> Result<()> {
     let config_bytes = tokio::fs::read(&config_path)
         .await
         .context("Failed to read vault config")?;
-    let mut config = VaultConfig::from_bytes(&config_bytes).context("Failed to parse config")?;
+    let config = VaultConfig::from_bytes(&config_bytes).context("Failed to parse config")?;
 
     let status = check_migration_needed(&config);
 
@@ -85,15 +85,28 @@ pub(crate) async fn cmd_migrate(path: &Path, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
+    let password = prompt_password("Enter password: ")?;
+    let provider = VaultManager::new()
+        .registry()
+        .resolve(
+            "local",
+            serde_json::json!({ "root": path.to_string_lossy() }),
+        )
+        .context("Failed to open vault storage")?;
+
     println!("\nRunning migrations...");
-    registry
-        .migrate(path, &mut config, &target)
+    let outcome = registry
+        .migrate(provider.as_ref(), &password, &target)
+        .await
         .context("Migration failed")?;
 
     println!(
         "Migration completed successfully! Vault is now at version {}.",
-        config.version
+        outcome.config.version
     );
+    if let Some(words) = &outcome.recovery_words {
+        display_recovery_words(words);
+    }
 
     Ok(())
 }

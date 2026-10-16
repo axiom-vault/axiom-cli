@@ -56,7 +56,7 @@ pub(crate) async fn cmd_change_password(path: &Path) -> Result<()> {
         .context("Failed to change password")?;
 
     // Save updated config
-    manager.save_config(&session).await?;
+    manager.save_config(&mut session).await?;
 
     println!("Password changed successfully!");
 
@@ -167,7 +167,7 @@ pub(crate) async fn cmd_migrate_vault(path: &Path) -> Result<()> {
 
     // Save updated config.
     manager
-        .save_config(&session)
+        .save_config(&mut session)
         .await
         .context("Failed to save migrated config")?;
 

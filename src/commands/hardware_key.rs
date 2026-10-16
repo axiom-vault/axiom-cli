@@ -58,7 +58,7 @@ pub(crate) async fn cmd_enroll(
         .enroll_hardware_key(&master_key, secret.as_slice(), metadata)
         .context("Failed to enroll hardware key")?;
     manager
-        .save_config(&session)
+        .save_config(&mut session)
         .await
         .context("Failed to save hardware-key enrollment")?;
 
@@ -90,7 +90,7 @@ pub(crate) async fn cmd_remove(path: &Path) -> Result<()> {
 
     session.config_mut().remove_hardware_key();
     manager
-        .save_config(&session)
+        .save_config(&mut session)
         .await
         .context("Failed to save hardware-key removal")?;
     println!("Hardware key removed successfully.");
@@ -273,7 +273,7 @@ mod tests {
 
     const PASSWORD: &str = "test-password";
     const ENROLLED_RESPONSE: &str = "hex:73696d756c617465642d796b2d726573706f6e7365";
-    const WRONG_RESPONSE: &str = "hex:77726f6e672d726573706f6e7365";
+    const WRONG_RESPONSE: &str = "hex:77726f6e672d726573706f6e73652d6279746573";
 
     #[test]
     fn decodes_plaintext_secret() {
