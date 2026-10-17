@@ -62,11 +62,24 @@ fn gdrive_manager(tokens: Tokens, folder_id: &str) -> (VaultManager, serde_json:
     (manager, provider_config)
 }
 
+/// Token file path: the explicit `path`, or `<config dir>/axiomvault/gdrive-tokens.json`.
+fn tokens_path_or_default(path: Option<&Path>) -> Result<PathBuf> {
+    match path {
+        Some(path) => Ok(path.to_path_buf()),
+        None => Ok(dirs::config_dir()
+            .context("No config directory found; pass the tokens path explicitly")?
+            .join("axiomvault")
+            .join("gdrive-tokens.json")),
+    }
+}
+
 pub(crate) async fn cmd_gdrive_auth(
     client_id: Option<String>,
     client_secret: Option<String>,
-    output: &PathBuf,
+    output: Option<&Path>,
 ) -> Result<()> {
+    let explicit_output = output.is_some();
+    let output = &tokens_path_or_default(output)?;
     info!("Starting Google Drive authentication");
 
     // Build auth config: CLI flags take precedence over environment variables.
@@ -215,9 +228,20 @@ pub(crate) async fn cmd_gdrive_auth(
     // The mode flag in OpenOptions only applies on creation.
     let _ = tokio::fs::remove_file(output).await;
 
+    // The default location may not exist yet; create it private to the user.
+    let default_dir = output.parent().filter(|_| !explicit_output);
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
+        if let Some(dir) = default_dir {
+            tokio::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .await
+                .context("Failed to create token directory")?;
+        }
         let mut f = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -231,6 +255,11 @@ pub(crate) async fn cmd_gdrive_auth(
     }
     #[cfg(not(unix))]
     {
+        if let Some(dir) = default_dir {
+            tokio::fs::create_dir_all(dir)
+                .await
+                .context("Failed to create token directory")?;
+        }
         tokio::fs::write(output, &tokens_json)
             .await
             .context("Failed to write tokens file")?;
@@ -250,9 +279,10 @@ pub(crate) async fn cmd_gdrive_auth(
 pub(crate) async fn cmd_gdrive_create(
     name: &str,
     folder_id: &str,
-    tokens_path: &Path,
+    tokens_path: Option<&Path>,
     strength: KdfStrength,
 ) -> Result<()> {
+    let tokens_path = tokens_path_or_default(tokens_path)?;
     info!("Creating new vault on Google Drive: {}", name);
 
     let kdf_params = kdf_params_from(strength);
@@ -267,9 +297,9 @@ pub(crate) async fn cmd_gdrive_create(
     validate_password_strength(&password)?;
 
     // Load tokens
-    let tokens_json = tokio::fs::read_to_string(tokens_path)
+    let tokens_json = tokio::fs::read_to_string(&tokens_path)
         .await
-        .context("Failed to read tokens file")?;
+        .with_context(|| format!("Failed to read tokens file {}", tokens_path.display()))?;
     let tokens: Tokens =
         serde_json::from_str(&tokens_json).context("Failed to parse tokens file")?;
 
@@ -292,15 +322,16 @@ pub(crate) async fn cmd_gdrive_create(
 }
 
 /// Open a vault on Google Drive.
-pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: &Path) -> Result<()> {
+pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: Option<&Path>) -> Result<()> {
+    let tokens_path = tokens_path_or_default(tokens_path)?;
     info!("Opening vault on Google Drive");
 
     let password = prompt_password("Enter password: ")?;
 
     // Load tokens
-    let tokens_json = tokio::fs::read_to_string(tokens_path)
+    let tokens_json = tokio::fs::read_to_string(&tokens_path)
         .await
-        .context("Failed to read tokens file")?;
+        .with_context(|| format!("Failed to read tokens file {}", tokens_path.display()))?;
     let tokens: Tokens =
         serde_json::from_str(&tokens_json).context("Failed to parse tokens file")?;
 
@@ -382,6 +413,18 @@ mod tests {
         );
         let raw = String::from_utf8_lossy(&config_bytes);
         assert!(!raw.contains("access-secret") && !raw.contains("refresh-secret"));
+    }
+
+    #[test]
+    fn tokens_path_defaults_to_config_dir_unless_overridden() {
+        let explicit = Path::new("custom/tokens.json");
+        assert_eq!(tokens_path_or_default(Some(explicit)).unwrap(), explicit);
+        if let Some(config_dir) = dirs::config_dir() {
+            assert_eq!(
+                tokens_path_or_default(None).unwrap(),
+                config_dir.join("axiomvault").join("gdrive-tokens.json")
+            );
+        }
     }
 
     #[test]

@@ -316,9 +316,9 @@ pub(crate) enum GdriveCommands {
         /// Optional custom client secret.
         #[arg(long)]
         client_secret: Option<String>,
-        /// Path to save tokens (JSON file).
+        /// Path to save tokens (JSON file) [default: <config dir>/axiomvault/gdrive-tokens.json].
         #[arg(short, long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
     },
     /// Create a vault on Google Drive.
     Create {
@@ -328,9 +328,9 @@ pub(crate) enum GdriveCommands {
         /// Google Drive folder ID where vault will be stored.
         #[arg(short, long)]
         folder_id: String,
-        /// Path to tokens file.
+        /// Path to tokens file [default: <config dir>/axiomvault/gdrive-tokens.json].
         #[arg(short, long)]
-        tokens: PathBuf,
+        tokens: Option<PathBuf>,
         /// KDF strength level.
         #[arg(short, long, value_enum, default_value_t = KdfStrength::Moderate)]
         strength: KdfStrength,
@@ -340,9 +340,9 @@ pub(crate) enum GdriveCommands {
         /// Google Drive folder ID where vault is stored.
         #[arg(short, long)]
         folder_id: String,
-        /// Path to tokens file.
+        /// Path to tokens file [default: <config dir>/axiomvault/gdrive-tokens.json].
         #[arg(short, long)]
-        tokens: PathBuf,
+        tokens: Option<PathBuf>,
     },
 }
 
@@ -522,7 +522,7 @@ mod tests {
                     RemoteCommands::Gdrive {
                         command: GdriveCommands::Auth { output, .. },
                     },
-            } => assert_eq!(output, PathBuf::from("tokens.json")),
+            } => assert_eq!(output, Some(PathBuf::from("tokens.json"))),
             _ => panic!("unexpected command tree"),
         }
     }

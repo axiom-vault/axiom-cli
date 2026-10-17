@@ -176,6 +176,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "dirs",
  "open",
  "rpassword",
  "serde",

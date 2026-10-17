@@ -75,17 +75,26 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                     client_id,
                     client_secret,
                     output,
-                } => commands::gdrive::cmd_gdrive_auth(client_id, client_secret, &output).await,
+                } => {
+                    commands::gdrive::cmd_gdrive_auth(client_id, client_secret, output.as_deref())
+                        .await
+                }
                 GdriveCommands::Create {
                     name,
                     folder_id,
                     tokens,
                     strength,
                 } => {
-                    commands::gdrive::cmd_gdrive_create(&name, &folder_id, &tokens, strength).await
+                    commands::gdrive::cmd_gdrive_create(
+                        &name,
+                        &folder_id,
+                        tokens.as_deref(),
+                        strength,
+                    )
+                    .await
                 }
                 GdriveCommands::Open { folder_id, tokens } => {
-                    commands::gdrive::cmd_gdrive_open(&folder_id, &tokens).await
+                    commands::gdrive::cmd_gdrive_open(&folder_id, tokens.as_deref()).await
                 }
             },
             RemoteCommands::Icloud => bail!("iCloud remote support is not implemented yet"),
