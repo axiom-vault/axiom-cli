@@ -19,9 +19,6 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             VaultCommands::Check { path, shallow } => {
                 commands::check::cmd_check(&path, shallow).await
             }
-            VaultCommands::Migrate { path, dry_run } => {
-                commands::migrate::cmd_migrate(&path, dry_run).await
-            }
         },
         Commands::File { command } => match command {
             FileCommands::List { vault_path, dir } => {
@@ -54,7 +51,6 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             RecoveryCommands::ShowKey { path } => {
                 commands::recovery::cmd_show_recovery_key(&path).await
             }
-            RecoveryCommands::Enable { path } => commands::recovery::cmd_migrate_vault(&path).await,
         },
         Commands::HardwareKey { command } => match command {
             HardwareKeyCommands::Enroll {

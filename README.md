@@ -130,7 +130,6 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `vault open` | Open vault interactively |
 | `vault info` | Display vault information |
 | `vault check` | Check vault health and integrity |
-| `vault migrate` | Migrate vault format |
 | `file list` | List vault contents |
 | `file add` | Add file to vault |
 | `file extract` | Extract file from vault |
@@ -139,7 +138,6 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `password change` | Change vault password |
 | `password reset` | Reset vault password |
 | `recovery show-key` | Show recovery key |
-| `recovery enable` | Enable recovery keys for a legacy vault |
 | `hardware-key enroll` | Enroll a prompted YubiKey challenge-response (hex, at least 16 bytes) for a local vault |
 | `hardware-key status` | Show local vault hardware-key enrollment status |
 | `hardware-key remove` | Remove the enrolled local vault hardware key |

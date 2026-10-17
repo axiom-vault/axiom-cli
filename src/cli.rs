@@ -161,15 +161,6 @@ pub(crate) enum VaultCommands {
         #[arg(long)]
         shallow: bool,
     },
-    /// Migrate vault to the latest format version.
-    Migrate {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
-        /// Only show what migrations would run, without executing them.
-        #[arg(long)]
-        dry_run: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -247,12 +238,6 @@ pub(crate) enum PasswordCommands {
 pub(crate) enum RecoveryCommands {
     /// Show recovery key for a vault (requires password).
     ShowKey {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
-    },
-    /// Migrate a legacy vault to support recovery keys.
-    Enable {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
