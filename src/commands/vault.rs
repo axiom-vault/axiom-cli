@@ -3,6 +3,7 @@ use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -66,7 +67,7 @@ pub(crate) async fn cmd_create(name: &str, path: &Path, strength: KdfStrength) -
 pub(crate) async fn cmd_open(path: &Path) -> Result<()> {
     info!("Opening vault");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let vault_path = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -92,7 +93,7 @@ pub(crate) async fn cmd_open(path: &Path) -> Result<()> {
 
 /// List directory contents.
 pub(crate) async fn cmd_list(vault_path: &Path, dir: &str) -> Result<()> {
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -134,7 +135,7 @@ pub(crate) async fn cmd_list(vault_path: &Path, dir: &str) -> Result<()> {
 pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Result<()> {
     info!("Adding file to vault");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -171,7 +172,7 @@ pub(crate) async fn cmd_extract(vault_path: &Path, source: &str, dest: &Path) ->
 
     ensure_destination_free(dest)?;
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -225,7 +226,7 @@ fn ensure_destination_free(dest: &Path) -> Result<()> {
 pub(crate) async fn cmd_mkdir(vault_path: &Path, dir: &str) -> Result<()> {
     info!("Creating directory");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -254,7 +255,7 @@ pub(crate) async fn cmd_mkdir(vault_path: &Path, dir: &str) -> Result<()> {
 pub(crate) async fn cmd_remove(vault_path: &Path, file: &str) -> Result<()> {
     info!("Removing file from vault");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -283,7 +284,7 @@ pub(crate) async fn cmd_remove(vault_path: &Path, file: &str) -> Result<()> {
 pub(crate) async fn cmd_info(path: &Path) -> Result<()> {
     info!("Getting vault info");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();

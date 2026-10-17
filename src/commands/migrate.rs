@@ -3,6 +3,7 @@ use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -86,7 +87,7 @@ pub(crate) async fn cmd_migrate(path: &Path, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let manager = VaultManager::new();
     let provider_config = serde_json::json!({ "root": path.to_string_lossy() });
 

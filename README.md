@@ -89,6 +89,23 @@ A real YubiKey HMAC-SHA1 response is 20 bytes, for example `hex:5f3a9c0e7b21d448
 Whitespace and underscores between hex digits are ignored.
 Plain UTF-8 strings, such as a typed passphrase, are rejected, because they do not carry enough entropy to protect the vault key.
 
+### Non-interactive password
+
+Passwords are never read from environment variables; `AXIOM_PASSWORD` and `AXIOMVAULT_PASSWORD` are ignored.
+For scripts, pass the password that opens an existing vault in a file with the global `--password-file <PATH>` flag, before or after the subcommand:
+
+```bash
+(umask 077; read -rsp 'Vault password: ' pw; printf '\n'; printf '%s\n' "$pw" > ~/.axiom-pw)
+axiom --password-file ~/.axiom-pw file list --vault-path ~/my-vault
+axiom file list --vault-path ~/my-vault --password-file ~/.axiom-pw
+```
+
+- The file must be a regular file with no group or other permissions (`chmod 600`); otherwise it is refused.
+- Its bytes are used as-is, except that exactly one trailing `\n` or `\r\n` is stripped. An empty password is refused.
+- New passwords (`vault create`, `remote gdrive create`, and the new password for `password change` and `password reset`) are always prompted.
+- Without a terminal and without `--password-file`, the command fails instead of waiting for input.
+- Unix only; on other platforms `--password-file` is refused.
+
 ### Google Drive
 
 ```bash

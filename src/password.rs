@@ -1,9 +1,19 @@
 use crate::cli::KdfStrength;
 use anyhow::{Context, Result};
 use axiomvault_crypto::KdfParams;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use zeroize::{Zeroize, Zeroizing};
 
 const MIN_PASSWORD_LENGTH: usize = 8;
+
+/// Set once from the global `--password-file` flag.
+static PASSWORD_FILE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record the `--password-file` path for [`vault_password`].
+pub(crate) fn set_password_file(path: PathBuf) {
+    let _ = PASSWORD_FILE.set(path);
+}
 
 /// Validate that a password meets the minimum length requirement.
 pub(crate) fn validate_password_strength(password: &[u8]) -> Result<()> {
@@ -23,9 +33,86 @@ pub(crate) fn validate_password_strength(password: &[u8]) -> Result<()> {
 /// environment-variable path: a secret in the environment is visible to child
 /// processes and, on some systems, to other users through the process table.
 pub(crate) fn prompt_password(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
-    let mut password = rpassword::prompt_password(prompt).context("Failed to read password")?;
+    let mut password = rpassword::prompt_password(prompt).context(
+        "Failed to read password from the terminal. Run the command interactively; \
+         --password-file covers only the password that opens an existing vault",
+    )?;
     let bytes = Zeroizing::new(password.as_bytes().to_vec());
     password.zeroize();
+    Ok(bytes)
+}
+
+/// The password that opens an existing vault: read from `--password-file`
+/// when it was given, otherwise prompted. New passwords never come from here.
+pub(crate) fn vault_password(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
+    match PASSWORD_FILE.get() {
+        Some(path) => read_password_file(path),
+        None => prompt_password(prompt),
+    }
+}
+
+#[cfg(unix)]
+fn read_password_file(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+
+    let not_regular =
+        || anyhow::anyhow!("--password-file {} is not a regular file", path.display());
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("Failed to read --password-file {}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(not_regular());
+    }
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open --password-file {}", path.display()))?;
+    // Check the opened file again, so a swap after the first check is caught.
+    let metadata = file.metadata().context("Failed to read --password-file")?;
+    if !metadata.is_file() {
+        return Err(not_regular());
+    }
+    let capacity = usize::try_from(metadata.len())
+        .unwrap_or(0)
+        .saturating_add(1);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
+    file.read_to_end(&mut bytes)
+        .context("Failed to read --password-file")?;
+    password_from_file_bytes(bytes, metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+fn read_password_file(_path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    anyhow::bail!(
+        "--password-file is supported only on Unix, where its permissions can be checked. \
+         Omit it and enter the password at the prompt."
+    )
+}
+
+/// Validate a password file's mode and contents. Strips exactly one trailing
+/// `\n` or `\r\n` and nothing else.
+#[cfg(unix)]
+fn password_from_file_bytes(
+    mut bytes: Zeroizing<Vec<u8>>,
+    mode: u32,
+) -> Result<Zeroizing<Vec<u8>>> {
+    if mode & 0o077 != 0 {
+        anyhow::bail!(
+            "--password-file is accessible by group or others (mode {:03o}). \
+             Run `chmod 600` on it and try again.",
+            mode & 0o777
+        );
+    }
+    let strip = if bytes.ends_with(b"\r\n") {
+        2
+    } else if bytes.ends_with(b"\n") {
+        1
+    } else {
+        0
+    };
+    let len = bytes.len() - strip;
+    bytes.truncate(len);
+    if bytes.is_empty() {
+        anyhow::bail!("--password-file is empty");
+    }
     Ok(bytes)
 }
 
@@ -93,6 +180,56 @@ mod tests {
             "AXIOMVAULT_PASSWORD",
         ] {
             assert!(!production.contains(needle), "found {needle}");
+        }
+    }
+
+    #[cfg(unix)]
+    fn from_file(bytes: &[u8], mode: u32) -> Result<Zeroizing<Vec<u8>>> {
+        password_from_file_bytes(Zeroizing::new(bytes.to_vec()), mode)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_file_0600_strips_one_trailing_newline() {
+        assert_eq!(
+            from_file(b"hunter22\n", 0o100600).unwrap().as_slice(),
+            b"hunter22"
+        );
+        assert_eq!(
+            from_file(b"hunter22\r\n", 0o600).unwrap().as_slice(),
+            b"hunter22"
+        );
+        assert_eq!(
+            from_file(b"hunter22\n\n", 0o600).unwrap().as_slice(),
+            b"hunter22\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_file_without_trailing_newline_is_unchanged() {
+        assert_eq!(
+            from_file(b" hunter22 ", 0o400).unwrap().as_slice(),
+            b" hunter22 "
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_file_0644_is_refused() {
+        let err = from_file(b"hunter22\n", 0o100644).unwrap_err().to_string();
+        assert!(err.contains("chmod 600"), "{err}");
+        assert!(err.contains("644"), "{err}");
+        assert!(!err.contains("hunter22"), "{err}");
+        assert!(from_file(b"hunter22", 0o610).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_password_file_is_refused() {
+        for bytes in [&b""[..], b"\n", b"\r\n"] {
+            let err = from_file(bytes, 0o600).unwrap_err().to_string();
+            assert!(err.contains("empty"), "{err}");
         }
     }
 

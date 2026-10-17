@@ -58,6 +58,12 @@ pub(crate) struct Cli {
     /// Enable verbose logging.
     #[arg(short, long)]
     pub(crate) verbose: bool,
+    /// Read the password that opens an existing vault from PATH instead of
+    /// prompting. PATH must be a regular file with no group or other
+    /// permissions (`chmod 600`); one trailing newline is stripped. Unix only.
+    /// New passwords (vault create, password change and reset) are always prompted.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(crate) password_file: Option<PathBuf>,
     #[command(subcommand)]
     pub(crate) command: Commands,
 }

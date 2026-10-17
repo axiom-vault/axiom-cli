@@ -3,6 +3,7 @@ use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -326,7 +327,7 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: Option<&Path>)
     let tokens_path = tokens_path_or_default(tokens_path)?;
     info!("Opening vault on Google Drive");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
 
     // Load tokens
     let tokens_json = tokio::fs::read_to_string(&tokens_path)

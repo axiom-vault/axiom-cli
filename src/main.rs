@@ -19,6 +19,9 @@ use tracing_subscriber::FmtSubscriber;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(path) = &cli.password_file {
+        password::set_password_file(path.clone());
+    }
 
     let level = if cli.verbose {
         Level::DEBUG

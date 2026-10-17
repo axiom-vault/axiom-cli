@@ -3,6 +3,7 @@ use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -50,7 +51,7 @@ pub(crate) async fn cmd_check(path: &Path, shallow: bool) -> Result<()> {
     }
 
     info!("Running full vault health check");
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
 
     let session = manager
         .open_vault("local", provider_config, &password)

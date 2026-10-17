@@ -1,4 +1,4 @@
-use crate::password::prompt_password;
+use crate::password::vault_password;
 use anyhow::{anyhow, bail, Context, Result};
 use axiomvault_storage::StorageProvider;
 use axiomvault_vault::{
@@ -20,7 +20,7 @@ pub(crate) async fn cmd_enroll(
     label: Option<&str>,
     key_id: Option<&str>,
 ) -> Result<()> {
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let secret = read_hardware_response()?;
     enroll(path, label, key_id, &password, &secret).await
 }
@@ -67,7 +67,7 @@ pub(crate) async fn cmd_status(path: &Path) -> Result<()> {
 }
 
 pub(crate) async fn cmd_remove(path: &Path) -> Result<()> {
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     remove(path, &password).await
 }
 

@@ -3,7 +3,7 @@ use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, may_print_recovery_words, prompt_password,
-    validate_password_strength,
+    validate_password_strength, vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -31,7 +31,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub(crate) async fn cmd_change_password(path: &Path) -> Result<()> {
     info!("Changing vault password");
 
-    let old_password = prompt_password("Enter current password: ")?;
+    let old_password = vault_password("Enter current password: ")?;
     let new_password = prompt_password("Enter new password: ")?;
     let confirm = prompt_password("Confirm new password: ")?;
 
@@ -71,7 +71,7 @@ pub(crate) async fn cmd_show_recovery_key(path: &Path) -> Result<()> {
 
     may_print_recovery_words(std::io::stdout().is_terminal())?;
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -178,7 +178,7 @@ pub(crate) async fn cmd_migrate_vault(path: &Path) -> Result<()> {
         status => anyhow::bail!("Cannot enable recovery keys: {}", status),
     }
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let provider = VaultManager::new()
         .registry()
         .resolve(

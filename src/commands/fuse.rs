@@ -1,4 +1,4 @@
-use crate::password::prompt_password;
+use crate::password::vault_password;
 use anyhow::{Context, Result};
 use axiomvault_fuse::mount::{self, MountOptions};
 use axiomvault_vault::VaultManager;
@@ -28,7 +28,7 @@ pub(crate) async fn cmd_mount(
         anyhow::bail!(mount::fuse_info());
     }
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let manager = VaultManager::new();
     let provider_config = serde_json::json!({
         "root": vault_path.to_string_lossy(),

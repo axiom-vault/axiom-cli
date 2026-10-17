@@ -3,6 +3,7 @@ use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -29,7 +30,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub(crate) async fn cmd_webdav(path: &Path, port: u16) -> Result<()> {
     info!("Starting WebDAV server for vault at: {}", path.display());
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let vault_path = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
