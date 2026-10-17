@@ -139,40 +139,68 @@ pub(crate) async fn cmd_reset_password(path: &Path) -> Result<()> {
 }
 
 /// Migrate a legacy vault to support recovery keys.
+///
+/// Only a 1.0 vault is changed, through the registry migration to 1.1. A 1.1
+/// or newer vault already has a recovery key; the 1.1 -> 2.0 upgrade belongs
+/// to `axiom vault migrate`.
 pub(crate) async fn cmd_migrate_vault(path: &Path) -> Result<()> {
     info!("Migrating vault to v1.1 format");
 
-    let password = prompt_password("Enter password: ")?;
-    let path_str = path.to_string_lossy().to_string();
-
-    let manager = VaultManager::new();
-    let provider_config = serde_json::json!({
-        "root": path_str
-    });
-
-    let mut session = manager
-        .open_vault("local", provider_config, &password)
+    let config_path = path.join("vault.config");
+    if !config_path.exists() {
+        anyhow::bail!("No vault found at {}", path.display());
+    }
+    let config_bytes = tokio::fs::read(&config_path)
         .await
-        .context("Failed to open vault")?;
+        .context("Failed to read vault config")?;
+    let config = VaultConfig::from_bytes(&config_bytes).context("Failed to parse config")?;
 
-    if !session.config().is_legacy_format() {
-        println!("Vault is already in v1.1 format with recovery key support.");
-        return Ok(());
+    match check_migration_needed(&config) {
+        MigrationStatus::UpToDate => {
+            println!(
+                "Vault is at version {} with recovery key support.",
+                config.version
+            );
+            return Ok(());
+        }
+        MigrationStatus::NeedsMigration { from, .. } if from == VaultVersion::V1_1 => {
+            println!(
+                "Vault is at version {} and already has recovery key support. \
+                 Run `axiom vault migrate` to upgrade it to {}.",
+                from,
+                VaultVersion::CURRENT
+            );
+            return Ok(());
+        }
+        MigrationStatus::NeedsMigration { from, .. } if from < VaultVersion::V1_1 => {}
+        status => anyhow::bail!("Cannot enable recovery keys: {}", status),
     }
 
-    let recovery_words = session
-        .config_mut()
-        .migrate_to_v1_1(&password)
+    let password = prompt_password("Enter password: ")?;
+    let provider = VaultManager::new()
+        .registry()
+        .resolve(
+            "local",
+            serde_json::json!({ "root": path.to_string_lossy() }),
+        )
+        .context("Failed to open vault storage")?;
+
+    let outcome = MigrationRegistry::default()
+        .migrate(provider.as_ref(), &password, &VaultVersion::V1_1)
+        .await
         .context("Failed to migrate vault")?;
 
-    // Save updated config.
-    manager
-        .save_config(&mut session)
-        .await
-        .context("Failed to save migrated config")?;
-
-    println!("Vault migrated successfully to v1.1 format!");
-    display_recovery_words(&recovery_words);
+    println!(
+        "Vault migrated successfully to v{} format!",
+        outcome.config.version
+    );
+    if let Some(words) = &outcome.recovery_words {
+        display_recovery_words(words);
+    }
+    println!(
+        "Run `axiom vault migrate` to upgrade it to {}.",
+        VaultVersion::CURRENT
+    );
 
     Ok(())
 }

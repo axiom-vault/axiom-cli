@@ -93,7 +93,7 @@ pub(crate) async fn cmd_migrate(path: &Path, dry_run: bool) -> Result<()> {
     if action == MigrationAction::RegistryThenUpgrade {
         let provider = manager
             .registry()
-            .resolve("local", provider_config)
+            .resolve("local", provider_config.clone())
             .context("Failed to open vault storage")?;
 
         println!("\nRunning migrations to {}...", VaultVersion::V1_1);
@@ -109,16 +109,29 @@ pub(crate) async fn cmd_migrate(path: &Path, dry_run: bool) -> Result<()> {
     }
 
     println!("\nUpgrading vault to version {}...", target);
-    // TODO(core-explicit-1_1-upgrade): call the explicit core 1.1 -> CURRENT
-    // upgrade here with `password`, then print the version it reports. Do not
-    // use `open_vault` for this: a 2.0 open refuses 1.1 vaults. Until the core
-    // call exists, stop here without writing to the vault.
-    Err(anyhow::anyhow!(
-        "Upgrade to {} is not available in this build (explicit core upgrade \
-         call missing); the vault was left at version {}",
-        target,
-        VaultVersion::V1_1
-    ))
+    // Explicit upgrade, not `open_vault`: a 2.0 open refuses 1.1 vaults. On
+    // failure the core leaves the 1.1 snapshot current.
+    let session = manager
+        .upgrade_to_current("local", provider_config, &password)
+        .await
+        .with_context(|| {
+            format!(
+                "Upgrade to {} failed; the vault was left at version {}",
+                target,
+                VaultVersion::V1_1
+            )
+        })?;
+    let version = session.config().version;
+    if version != VaultVersion::CURRENT {
+        anyhow::bail!("Upgrade reported version {} instead of {}", version, target);
+    }
+
+    println!(
+        "Migration completed successfully! Vault is now at version {}.",
+        version
+    );
+
+    Ok(())
 }
 
 /// What `cmd_migrate` does for a vault, decided from its config alone.
