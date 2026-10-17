@@ -26,6 +26,42 @@ use tracing::info;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
+/// Opaque, non-secret reference persisted in `vault.config` instead of tokens.
+const GDRIVE_CREDENTIAL_REF: &str = "local:gdrive:cli-tokens";
+
+/// Resolves `GDRIVE_CREDENTIAL_REF` to the tokens read from the local `--tokens` file.
+struct TokensFileResolver(Tokens);
+
+impl axiomvault_vault::manager::LocalCredentialResolver for TokensFileResolver {
+    fn resolve(
+        &self,
+        provider_type: &str,
+        credential_ref: &str,
+    ) -> axiomvault_common::Result<serde_json::Value> {
+        if provider_type != "gdrive" || credential_ref != GDRIVE_CREDENTIAL_REF {
+            return Err(axiomvault_common::Error::NotFound(format!(
+                "Unknown credential reference '{credential_ref}'"
+            )));
+        }
+        let tokens = serde_json::to_value(&self.0)
+            .map_err(|error| axiomvault_common::Error::Serialization(error.to_string()))?;
+        Ok(serde_json::json!({ "tokens": tokens }))
+    }
+}
+
+/// Build a manager whose provider config carries only `folder_id` and `credential_ref`.
+fn gdrive_manager(tokens: Tokens, folder_id: &str) -> (VaultManager, serde_json::Value) {
+    let manager = VaultManager::with_registry_and_credential_resolver(
+        create_default_registry(),
+        Arc::new(TokensFileResolver(tokens)),
+    );
+    let provider_config = serde_json::json!({
+        "folder_id": folder_id,
+        "credential_ref": GDRIVE_CREDENTIAL_REF,
+    });
+    (manager, provider_config)
+}
+
 pub(crate) async fn cmd_gdrive_auth(
     client_id: Option<String>,
     client_secret: Option<String>,
@@ -239,16 +275,7 @@ pub(crate) async fn cmd_gdrive_create(
 
     let vault_id = VaultId::new(name).context("Invalid vault name")?;
 
-    let manager = VaultManager::new();
-
-    let gdrive_config = GDriveConfig {
-        folder_id: folder_id.to_string(),
-        tokens,
-        auth_config: None,
-    };
-
-    let provider_config =
-        serde_json::to_value(gdrive_config).context("Failed to serialize GDrive config")?;
+    let (manager, provider_config) = gdrive_manager(tokens, folder_id);
 
     let creation = manager
         .create_vault(vault_id, &password, "gdrive", provider_config, kdf_params)
@@ -277,16 +304,7 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: &Path) -> Resu
     let tokens: Tokens =
         serde_json::from_str(&tokens_json).context("Failed to parse tokens file")?;
 
-    let gdrive_config = GDriveConfig {
-        folder_id: folder_id.to_string(),
-        tokens,
-        auth_config: None,
-    };
-
-    let provider_config =
-        serde_json::to_value(gdrive_config).context("Failed to serialize GDrive config")?;
-
-    let manager = VaultManager::new();
+    let (manager, provider_config) = gdrive_manager(tokens, folder_id);
 
     let session = manager
         .open_vault("gdrive", provider_config, &password)
@@ -299,4 +317,76 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: &Path) -> Resu
     println!("\nVault is ready for operations.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axiomvault_storage::{MemoryProvider, ProviderRegistry, StorageProvider};
+    use axiomvault_vault::manager::LocalCredentialResolver;
+    use axiomvault_vault::InMemoryFreshnessAnchor;
+
+    fn test_tokens() -> Tokens {
+        Tokens {
+            access_token: "access-secret".to_string(),
+            refresh_token: "refresh-secret".to_string(),
+            expires_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn gdrive_create_persists_reference_not_tokens() {
+        let storage = Arc::new(MemoryProvider::new());
+        let factory_storage = storage.clone();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .register(
+                "gdrive",
+                Box::new(move |config| {
+                    assert_eq!(config["tokens"]["access_token"], "access-secret");
+                    Ok(factory_storage.clone() as Arc<dyn StorageProvider>)
+                }),
+            )
+            .unwrap();
+        let manager = VaultManager::with_registry_credential_resolver_and_anchor(
+            registry,
+            Arc::new(TokensFileResolver(test_tokens())),
+            Arc::new(InMemoryFreshnessAnchor::new()),
+        );
+        let (_, provider_config) = gdrive_manager(test_tokens(), "folder-1");
+
+        manager
+            .create_vault(
+                VaultId::new("gdrive-test").unwrap(),
+                b"correct horse battery staple",
+                "gdrive",
+                provider_config,
+                KdfParams::interactive(),
+            )
+            .await
+            .unwrap();
+
+        let config_bytes = storage
+            .download(&VaultPath::parse("vault.config").unwrap())
+            .await
+            .unwrap();
+        let config = VaultConfig::from_bytes(&config_bytes).unwrap();
+        assert_eq!(
+            config.provider_config,
+            serde_json::json!({
+                "folder_id": "folder-1",
+                "credential_ref": GDRIVE_CREDENTIAL_REF,
+                "credential_schema": 1,
+            })
+        );
+        let raw = String::from_utf8_lossy(&config_bytes);
+        assert!(!raw.contains("access-secret") && !raw.contains("refresh-secret"));
+    }
+
+    #[test]
+    fn resolver_rejects_unknown_references() {
+        let resolver = TokensFileResolver(test_tokens());
+        assert!(resolver.resolve("gdrive", "local:gdrive:other").is_err());
+        assert!(resolver.resolve("dropbox", GDRIVE_CREDENTIAL_REF).is_err());
+    }
 }
