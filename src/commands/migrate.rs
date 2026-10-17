@@ -39,45 +39,46 @@ pub(crate) async fn cmd_migrate(path: &Path, dry_run: bool) -> Result<()> {
         .context("Failed to read vault config")?;
     let config = VaultConfig::from_bytes(&config_bytes).context("Failed to parse config")?;
 
-    let status = check_migration_needed(&config);
-
-    match &status {
-        MigrationStatus::UpToDate => {
-            println!("Vault is up to date (version {}).", config.version);
-            return Ok(());
-        }
-        MigrationStatus::Incompatible { version } => {
-            anyhow::bail!(
-                "Vault version {} is incompatible with this software (current: {})",
-                version,
-                VaultVersion::CURRENT
-            );
-        }
-        MigrationStatus::NeedsMigration { from, to } => {
-            println!("Migration needed: {} -> {}", from, to);
-        }
+    let action = plan_migration(&check_migration_needed(&config))?;
+    if action == MigrationAction::UpToDate {
+        println!("Vault is up to date (version {}).", config.version);
+        return Ok(());
     }
 
     let registry = MigrationRegistry::default();
     let target = VaultVersion::CURRENT;
+    println!("Migration needed: {} -> {}", config.version, target);
 
-    if let Some(steps) = registry.find_path(&config.version, &target) {
-        println!("Migration plan ({} step(s)):", steps.len());
-        for (i, step) in steps.iter().enumerate() {
-            println!(
-                "  {}. {} -> {}: {}",
-                i + 1,
+    // Registry migrations stop at 1.1; the 1.1 -> CURRENT step is a separate,
+    // explicit core upgrade that publishes a new manifest generation.
+    let mut steps = Vec::new();
+    if action == MigrationAction::RegistryThenUpgrade {
+        let registry_steps = registry
+            .find_path(&config.version, &VaultVersion::V1_1)
+            .with_context(|| {
+                format!(
+                    "No migration path found from {} to {}",
+                    config.version,
+                    VaultVersion::V1_1
+                )
+            })?;
+        for step in registry_steps {
+            steps.push(format!(
+                "{} -> {}: {}",
                 step.source_version(),
                 step.target_version(),
                 step.description()
-            );
+            ));
         }
-    } else {
-        anyhow::bail!(
-            "No migration path found from {} to {}",
-            config.version,
-            target
-        );
+    }
+    steps.push(format!(
+        "{} -> {}: explicit core upgrade (publishes a new manifest generation)",
+        VaultVersion::V1_1,
+        target
+    ));
+    println!("Migration plan ({} step(s)):", steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        println!("  {}. {}", i + 1, step);
     }
 
     if dry_run {
@@ -86,31 +87,126 @@ pub(crate) async fn cmd_migrate(path: &Path, dry_run: bool) -> Result<()> {
     }
 
     let password = prompt_password("Enter password: ")?;
-    let provider = VaultManager::new()
-        .registry()
-        .resolve(
-            "local",
-            serde_json::json!({ "root": path.to_string_lossy() }),
-        )
-        .context("Failed to open vault storage")?;
+    let manager = VaultManager::new();
+    let provider_config = serde_json::json!({ "root": path.to_string_lossy() });
 
-    println!("\nRunning migrations...");
-    let outcome = registry
-        .migrate(provider.as_ref(), &password, &target)
-        .await
-        .context("Migration failed")?;
+    if action == MigrationAction::RegistryThenUpgrade {
+        let provider = manager
+            .registry()
+            .resolve("local", provider_config)
+            .context("Failed to open vault storage")?;
 
-    println!(
-        "Migration completed successfully! Vault is now at version {}.",
-        outcome.config.version
-    );
-    if let Some(words) = &outcome.recovery_words {
-        display_recovery_words(words);
+        println!("\nRunning migrations to {}...", VaultVersion::V1_1);
+        let outcome = registry
+            .migrate(provider.as_ref(), &password, &VaultVersion::V1_1)
+            .await
+            .context("Migration failed")?;
+        println!("Vault migrated to version {}.", outcome.config.version);
+        // Shown before the upgrade so the words survive a failed upgrade.
+        if let Some(words) = &outcome.recovery_words {
+            display_recovery_words(words);
+        }
     }
 
-    Ok(())
+    println!("\nUpgrading vault to version {}...", target);
+    // TODO(core-explicit-1_1-upgrade): call the explicit core 1.1 -> CURRENT
+    // upgrade here with `password`, then print the version it reports. Do not
+    // use `open_vault` for this: a 2.0 open refuses 1.1 vaults. Until the core
+    // call exists, stop here without writing to the vault.
+    Err(anyhow::anyhow!(
+        "Upgrade to {} is not available in this build (explicit core upgrade \
+         call missing); the vault was left at version {}",
+        target,
+        VaultVersion::V1_1
+    ))
+}
+
+/// What `cmd_migrate` does for a vault, decided from its config alone.
+#[derive(Debug, PartialEq, Eq)]
+enum MigrationAction {
+    /// Already at `VaultVersion::CURRENT`.
+    UpToDate,
+    /// Pre-1.1 vault: registry migration to 1.1, then the explicit upgrade.
+    RegistryThenUpgrade,
+    /// 1.1 vault: only the explicit core upgrade to `VaultVersion::CURRENT`.
+    UpgradeOnly,
+}
+
+fn plan_migration(status: &MigrationStatus) -> Result<MigrationAction> {
+    match status {
+        MigrationStatus::UpToDate => Ok(MigrationAction::UpToDate),
+        MigrationStatus::NeedsMigration { from, .. } if *from == VaultVersion::V1_1 => {
+            Ok(MigrationAction::UpgradeOnly)
+        }
+        MigrationStatus::NeedsMigration { from, .. } if *from < VaultVersion::V1_1 => {
+            Ok(MigrationAction::RegistryThenUpgrade)
+        }
+        MigrationStatus::NeedsMigration { from, to } => {
+            anyhow::bail!("No migration path found from {} to {}", from, to)
+        }
+        MigrationStatus::Incompatible { version } => anyhow::bail!(
+            "Vault version {} is incompatible with this software (current: {})",
+            version,
+            VaultVersion::CURRENT
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // RAID helpers
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const V1_0: VaultVersion = VaultVersion { major: 1, minor: 0 };
+
+    fn needs(from: VaultVersion) -> MigrationStatus {
+        MigrationStatus::NeedsMigration {
+            from,
+            to: VaultVersion::CURRENT,
+        }
+    }
+
+    #[test]
+    fn up_to_date_vault_needs_no_action() {
+        assert_eq!(
+            plan_migration(&MigrationStatus::UpToDate).unwrap(),
+            MigrationAction::UpToDate
+        );
+    }
+
+    #[test]
+    fn v1_0_vault_runs_registry_then_upgrade() {
+        assert_eq!(
+            plan_migration(&needs(V1_0)).unwrap(),
+            MigrationAction::RegistryThenUpgrade
+        );
+    }
+
+    #[test]
+    fn v1_1_vault_needs_only_the_upgrade() {
+        assert_eq!(
+            plan_migration(&needs(VaultVersion::V1_1)).unwrap(),
+            MigrationAction::UpgradeOnly
+        );
+    }
+
+    #[test]
+    fn incompatible_vault_is_refused() {
+        let status = MigrationStatus::Incompatible {
+            version: VaultVersion { major: 3, minor: 0 },
+        };
+        let err = plan_migration(&status).unwrap_err().to_string();
+        assert!(err.contains("incompatible"), "{err}");
+    }
+
+    #[test]
+    fn unknown_source_version_is_refused() {
+        let err = plan_migration(&needs(VaultVersion { major: 1, minor: 2 }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No migration path"), "{err}");
+    }
+}
