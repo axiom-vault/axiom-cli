@@ -3,6 +3,7 @@ pub(crate) mod check;
 pub(crate) mod fuse;
 pub(crate) mod gdrive;
 pub(crate) mod hardware_key;
+pub(crate) mod icloud;
 pub(crate) mod migrate;
 pub(crate) mod raid;
 pub(crate) mod recovery;

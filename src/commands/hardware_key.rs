@@ -273,7 +273,7 @@ mod tests {
 
     const PASSWORD: &str = "test-password";
     const ENROLLED_RESPONSE: &str = "hex:73696d756c617465642d796b2d726573706f6e7365";
-    const WRONG_RESPONSE: &str = "hex:77726f6e672d726573706f6e7365";
+    const WRONG_RESPONSE: &str = "hex:746f74616c6c792d77726f6e672d68617264776172652d736563726574";
 
     #[test]
     fn decodes_plaintext_secret() {
