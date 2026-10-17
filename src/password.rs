@@ -4,7 +4,6 @@ use axiomvault_crypto::KdfParams;
 use zeroize::{Zeroize, Zeroizing};
 
 const MIN_PASSWORD_LENGTH: usize = 8;
-const PASSWORD_ENV_VARS: [&str; 2] = ["AXIOM_PASSWORD", "AXIOMVAULT_PASSWORD"];
 
 /// Validate that a password meets the minimum length requirement.
 pub(crate) fn validate_password_strength(password: &[u8]) -> Result<()> {
@@ -19,43 +18,15 @@ pub(crate) fn validate_password_strength(password: &[u8]) -> Result<()> {
 }
 
 /// Prompt for password securely.
+///
+/// The password is always read from the terminal with echo off. There is no
+/// environment-variable path: a secret in the environment is visible to child
+/// processes and, on some systems, to other users through the process table.
 pub(crate) fn prompt_password(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
-    // Allow non-interactive use via environment variable (useful for scripting/testing).
-    for env_var in PASSWORD_ENV_VARS {
-        if let Ok(mut pw) = std::env::var(env_var) {
-            if !pw.is_empty() {
-                let bytes = Zeroizing::new(pw.as_bytes().to_vec());
-                pw.zeroize();
-                return Ok(bytes);
-            }
-        }
-    }
-
     let mut password = rpassword::prompt_password(prompt).context("Failed to read password")?;
     let bytes = Zeroizing::new(password.as_bytes().to_vec());
     password.zeroize();
     Ok(bytes)
-}
-
-/// Refuse a password-changing command while a password env var is set.
-///
-/// With the env var set, every prompt returns the same value, so the old and
-/// new passwords would be identical and the command would silently do nothing.
-pub(crate) fn ensure_no_env_password(command: &str) -> Result<()> {
-    let set_var = PASSWORD_ENV_VARS
-        .into_iter()
-        .find(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
-    refuse_env_password(set_var, command)
-}
-
-fn refuse_env_password(set_var: Option<&str>, command: &str) -> Result<()> {
-    if let Some(name) = set_var {
-        anyhow::bail!(
-            "{name} is set, so `{command}` would reuse it for every password prompt \
-             and change nothing. Unset {name} and run `{command}` again interactively."
-        );
-    }
-    Ok(())
 }
 
 /// Allow recovery words to be printed only to an interactive terminal, so they
@@ -107,69 +78,22 @@ pub(crate) fn kdf_params_from(strength: KdfStrength) -> KdfParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
+    /// Source-level check, because the prompt itself needs a terminal: the
+    /// non-test part of this module must not read any environment variable.
     #[test]
-    fn prompt_password_prefers_axiom_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let original_axiom = std::env::var("AXIOM_PASSWORD").ok();
-        let original_legacy = std::env::var("AXIOMVAULT_PASSWORD").ok();
-
-        std::env::set_var("AXIOM_PASSWORD", "new-secret");
-        std::env::set_var("AXIOMVAULT_PASSWORD", "legacy-secret");
-
-        let password = prompt_password("unused").unwrap();
-        assert_eq!(password.as_slice(), b"new-secret");
-
-        restore_env("AXIOM_PASSWORD", original_axiom);
-        restore_env("AXIOMVAULT_PASSWORD", original_legacy);
-    }
-
-    #[test]
-    fn prompt_password_falls_back_to_legacy_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let original_axiom = std::env::var("AXIOM_PASSWORD").ok();
-        let original_legacy = std::env::var("AXIOMVAULT_PASSWORD").ok();
-
-        std::env::remove_var("AXIOM_PASSWORD");
-        std::env::set_var("AXIOMVAULT_PASSWORD", "legacy-secret");
-
-        let password = prompt_password("unused").unwrap();
-        assert_eq!(password.as_slice(), b"legacy-secret");
-
-        restore_env("AXIOM_PASSWORD", original_axiom);
-        restore_env("AXIOMVAULT_PASSWORD", original_legacy);
-    }
-
-    #[test]
-    fn env_password_refuses_password_change() {
-        let err = refuse_env_password(Some("AXIOM_PASSWORD"), "axiom password change")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("Unset AXIOM_PASSWORD"), "{err}");
-        assert!(err.contains("axiom password change"), "{err}");
-    }
-
-    #[test]
-    fn no_env_password_allows_password_change() {
-        assert!(refuse_env_password(None, "axiom password reset").is_ok());
-    }
-
-    #[test]
-    fn ensure_no_env_password_detects_legacy_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let original_axiom = std::env::var("AXIOM_PASSWORD").ok();
-        let original_legacy = std::env::var("AXIOMVAULT_PASSWORD").ok();
-
-        std::env::remove_var("AXIOM_PASSWORD");
-        std::env::set_var("AXIOMVAULT_PASSWORD", "legacy-secret");
-        let err = ensure_no_env_password("axiom password reset").unwrap_err();
-        assert!(err.to_string().contains("AXIOMVAULT_PASSWORD"));
-
-        restore_env("AXIOM_PASSWORD", original_axiom);
-        restore_env("AXIOMVAULT_PASSWORD", original_legacy);
+    fn password_module_reads_no_environment_variable() {
+        let source = include_str!("password.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        for needle in [
+            "std::env",
+            "env::var",
+            "var_os",
+            "AXIOM_PASSWORD",
+            "AXIOMVAULT_PASSWORD",
+        ] {
+            assert!(!production.contains(needle), "found {needle}");
+        }
     }
 
     #[test]
@@ -182,13 +106,5 @@ mod tests {
     #[test]
     fn recovery_words_allowed_on_a_tty() {
         assert!(may_print_recovery_words(true).is_ok());
-    }
-
-    fn restore_env(key: &str, value: Option<String>) {
-        if let Some(value) = value {
-            std::env::set_var(key, value);
-        } else {
-            std::env::remove_var(key);
-        }
     }
 }

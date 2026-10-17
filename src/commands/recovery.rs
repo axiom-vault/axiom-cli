@@ -2,8 +2,8 @@
 use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
-    display_recovery_words, ensure_no_env_password, kdf_params_from, may_print_recovery_words,
-    prompt_password, validate_password_strength,
+    display_recovery_words, kdf_params_from, may_print_recovery_words, prompt_password,
+    validate_password_strength,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -30,8 +30,6 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) async fn cmd_change_password(path: &Path) -> Result<()> {
     info!("Changing vault password");
-
-    ensure_no_env_password("axiom password change")?;
 
     let old_password = prompt_password("Enter current password: ")?;
     let new_password = prompt_password("Enter new password: ")?;
@@ -104,8 +102,6 @@ pub(crate) async fn cmd_show_recovery_key(path: &Path) -> Result<()> {
 /// Reset vault password using recovery key.
 pub(crate) async fn cmd_reset_password(path: &Path) -> Result<()> {
     info!("Resetting vault password using recovery key");
-
-    ensure_no_env_password("axiom password reset")?;
 
     // Read without echo; Zeroizing wipes the words when they go out of scope.
     let recovery_input = Zeroizing::new(

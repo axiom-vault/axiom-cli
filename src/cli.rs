@@ -255,7 +255,7 @@ pub(crate) enum RecoveryCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum HardwareKeyCommands {
-    /// Enroll YubiKey challenge-response bytes for a local vault.
+    /// Enroll a YubiKey challenge-response for a local vault (prompted, hex:..., at least 16 bytes).
     Enroll {
         /// Path to the vault.
         #[arg(short, long)]
@@ -279,13 +279,13 @@ pub(crate) enum HardwareKeyCommands {
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Verify AXIOM_YUBIKEY_RESPONSE or AXIOM_HARDWARE_KEY_RESPONSE against the enrolled local vault.
+    /// Verify a prompted hardware-key response (hex:..., at least 16 bytes) against a local vault.
     Test {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Open a local vault using AXIOM_YUBIKEY_RESPONSE or AXIOM_HARDWARE_KEY_RESPONSE instead of a password.
+    /// Open a local vault with a prompted hardware-key response (hex:..., at least 16 bytes) instead of a password.
     Open {
         /// Path to the vault.
         #[arg(short, long)]

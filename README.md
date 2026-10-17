@@ -68,29 +68,26 @@ axiom file extract --vault-path ~/my-vault --source /secret.pdf --dest ~/secret.
 # Interactive session
 axiom vault open --path ~/my-vault
 
-# YubiKey challenge-response bytes via env (plain UTF-8 or hex:...)
-# Prompt once, then scope the response to each command instead of exporting it
-read -rsp "YubiKey response: " AXIOM_YUBIKEY_RESPONSE; printf '\n'
-AXIOM_YUBIKEY_RESPONSE="$AXIOM_YUBIKEY_RESPONSE" axiom hardware-key enroll --path ~/my-vault --label 'desk yubikey' --key-id slot-2
+# YubiKey challenge-response: prompted with echo off, hex:... with at least 16 bytes
+axiom hardware-key enroll --path ~/my-vault --label 'desk yubikey' --key-id slot-2
 axiom hardware-key status --path ~/my-vault
-AXIOM_YUBIKEY_RESPONSE="$AXIOM_YUBIKEY_RESPONSE" axiom hardware-key test --path ~/my-vault
-AXIOM_YUBIKEY_RESPONSE="$AXIOM_YUBIKEY_RESPONSE" axiom hardware-key open --path ~/my-vault
-unset AXIOM_YUBIKEY_RESPONSE
+axiom hardware-key test --path ~/my-vault
+axiom hardware-key open --path ~/my-vault
 
 # Mount as a filesystem (when built with --features fuse)
 mkdir -p ~/my-vault-mount
 axiom mount fuse --path ~/my-vault ~/my-vault-mount
 ```
 
-### Hardware-key env source
+### Hardware-key response
 
-For now the CLI reads YubiKey challenge-response bytes from `AXIOM_YUBIKEY_RESPONSE` or `AXIOM_HARDWARE_KEY_RESPONSE`, so a physical device is not required during development and testing.
-Prefer a one-shot env assignment or a prompt like the example above instead of `export` in shared shells, scripts, or long-lived terminals.
+`hardware-key enroll`, `test` and `open` prompt for the YubiKey challenge-response bytes and read them from the terminal with echo off.
+The response is never read from an environment variable: `AXIOM_YUBIKEY_RESPONSE` and `AXIOM_HARDWARE_KEY_RESPONSE` are ignored.
 
-Accepted formats:
-
-- raw UTF-8 bytes, for example `simulated-yubikey-response`
-- hex with a `hex:` prefix, for example `hex:736563726574`
+The response must be hex with a `hex:` prefix and decode to at least 16 bytes (32 hex digits).
+A real YubiKey HMAC-SHA1 response is 20 bytes, for example `hex:5f3a9c0e7b21d4486a0c93f1e2b7d65804a1c3e9`.
+Whitespace and underscores between hex digits are ignored.
+Plain UTF-8 strings, such as a typed passphrase, are rejected, because they do not carry enough entropy to protect the vault key.
 
 ### Google Drive
 
@@ -126,11 +123,11 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `password reset` | Reset vault password |
 | `recovery show-key` | Show recovery key |
 | `recovery enable` | Enable recovery keys for a legacy vault |
-| `hardware-key enroll` | Enroll env-sourced YubiKey challenge-response bytes for a local vault |
+| `hardware-key enroll` | Enroll a prompted YubiKey challenge-response (hex, at least 16 bytes) for a local vault |
 | `hardware-key status` | Show local vault hardware-key enrollment status |
 | `hardware-key remove` | Remove the enrolled local vault hardware key |
-| `hardware-key test` | Verify `AXIOM_YUBIKEY_RESPONSE` or `AXIOM_HARDWARE_KEY_RESPONSE` against a local vault |
-| `hardware-key open` | Open a local vault with `AXIOM_YUBIKEY_RESPONSE` or `AXIOM_HARDWARE_KEY_RESPONSE` |
+| `hardware-key test` | Verify a prompted hardware-key response against a local vault |
+| `hardware-key open` | Open a local vault with a prompted hardware-key response |
 | `remote gdrive auth` | Authenticate with Google Drive |
 | `remote gdrive create` | Create vault on Google Drive |
 | `remote gdrive open` | Open vault from Google Drive |
