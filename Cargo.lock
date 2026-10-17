@@ -177,6 +177,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs",
+ "getrandom 0.4.2",
  "open",
  "rpassword",
  "serde",
@@ -191,7 +192,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-common"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=5804c81a2343226c56e08935d51e9496ff17dbaa#5804c81a2343226c56e08935d51e9496ff17dbaa"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=d77a1d52e2f1a64afd4bad8c26b1999e255454f8#d77a1d52e2f1a64afd4bad8c26b1999e255454f8"
 dependencies = [
  "serde",
  "serde_json",
@@ -202,7 +203,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-crypto"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=5804c81a2343226c56e08935d51e9496ff17dbaa#5804c81a2343226c56e08935d51e9496ff17dbaa"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=d77a1d52e2f1a64afd4bad8c26b1999e255454f8#d77a1d52e2f1a64afd4bad8c26b1999e255454f8"
 dependencies = [
  "argon2",
  "axiomvault-common",
@@ -221,7 +222,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-fuse"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=5804c81a2343226c56e08935d51e9496ff17dbaa#5804c81a2343226c56e08935d51e9496ff17dbaa"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=d77a1d52e2f1a64afd4bad8c26b1999e255454f8#d77a1d52e2f1a64afd4bad8c26b1999e255454f8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -244,13 +245,13 @@ dependencies = [
 [[package]]
 name = "axiomvault-storage"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=5804c81a2343226c56e08935d51e9496ff17dbaa#5804c81a2343226c56e08935d51e9496ff17dbaa"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=d77a1d52e2f1a64afd4bad8c26b1999e255454f8#d77a1d52e2f1a64afd4bad8c26b1999e255454f8"
 dependencies = [
  "async-trait",
  "axiomvault-common",
+ "blake2",
  "bytes",
  "chrono",
- "crc32fast",
  "dirs",
  "futures",
  "oauth2",
@@ -271,7 +272,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-sync"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=5804c81a2343226c56e08935d51e9496ff17dbaa#5804c81a2343226c56e08935d51e9496ff17dbaa"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=d77a1d52e2f1a64afd4bad8c26b1999e255454f8#d77a1d52e2f1a64afd4bad8c26b1999e255454f8"
 dependencies = [
  "async-trait",
  "axiomvault-common",
@@ -291,7 +292,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-vault"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=5804c81a2343226c56e08935d51e9496ff17dbaa#5804c81a2343226c56e08935d51e9496ff17dbaa"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=d77a1d52e2f1a64afd4bad8c26b1999e255454f8#d77a1d52e2f1a64afd4bad8c26b1999e255454f8"
 dependencies = [
  "async-trait",
  "axiomvault-common",
@@ -317,7 +318,7 @@ dependencies = [
 [[package]]
 name = "axiomvault-webdav"
 version = "0.1.0"
-source = "git+https://github.com/axiom-vault/axiom-core?rev=5804c81a2343226c56e08935d51e9496ff17dbaa#5804c81a2343226c56e08935d51e9496ff17dbaa"
+source = "git+https://github.com/axiom-vault/axiom-core?rev=d77a1d52e2f1a64afd4bad8c26b1999e255454f8#d77a1d52e2f1a64afd4bad8c26b1999e255454f8"
 dependencies = [
  "axiomvault-common",
  "axiomvault-vault",
@@ -652,15 +653,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "crc32fast"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
-dependencies = [
- "cfg-if",
 ]
 
 [[package]]

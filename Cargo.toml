@@ -42,13 +42,13 @@ default = []
 fuse = ["dep:axiomvault-fuse", "axiomvault-fuse/fuse"]
 
 [dependencies]
-axiomvault-common = { git = "https://github.com/axiom-vault/axiom-core", rev = "5804c81a2343226c56e08935d51e9496ff17dbaa" }
-axiomvault-crypto = { git = "https://github.com/axiom-vault/axiom-core", rev = "5804c81a2343226c56e08935d51e9496ff17dbaa" }
-axiomvault-storage = { git = "https://github.com/axiom-vault/axiom-core", rev = "5804c81a2343226c56e08935d51e9496ff17dbaa" }
-axiomvault-vault = { git = "https://github.com/axiom-vault/axiom-core", rev = "5804c81a2343226c56e08935d51e9496ff17dbaa" }
-axiomvault-sync = { git = "https://github.com/axiom-vault/axiom-core", rev = "5804c81a2343226c56e08935d51e9496ff17dbaa" }
-axiomvault-webdav = { git = "https://github.com/axiom-vault/axiom-core", rev = "5804c81a2343226c56e08935d51e9496ff17dbaa" }
-axiomvault-fuse = { git = "https://github.com/axiom-vault/axiom-core", rev = "5804c81a2343226c56e08935d51e9496ff17dbaa", optional = true }
+axiomvault-common = { git = "https://github.com/axiom-vault/axiom-core", rev = "d77a1d52e2f1a64afd4bad8c26b1999e255454f8" }
+axiomvault-crypto = { git = "https://github.com/axiom-vault/axiom-core", rev = "d77a1d52e2f1a64afd4bad8c26b1999e255454f8" }
+axiomvault-storage = { git = "https://github.com/axiom-vault/axiom-core", rev = "d77a1d52e2f1a64afd4bad8c26b1999e255454f8" }
+axiomvault-vault = { git = "https://github.com/axiom-vault/axiom-core", rev = "d77a1d52e2f1a64afd4bad8c26b1999e255454f8" }
+axiomvault-sync = { git = "https://github.com/axiom-vault/axiom-core", rev = "d77a1d52e2f1a64afd4bad8c26b1999e255454f8" }
+axiomvault-webdav = { git = "https://github.com/axiom-vault/axiom-core", rev = "d77a1d52e2f1a64afd4bad8c26b1999e255454f8" }
+axiomvault-fuse = { git = "https://github.com/axiom-vault/axiom-core", rev = "d77a1d52e2f1a64afd4bad8c26b1999e255454f8", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.6", features = ["derive"] }
@@ -63,3 +63,4 @@ open = "5.3"
 url = "2.5"
 dirs = "6.0"
 zeroize = { version = "1.7", features = ["derive"] }
+getrandom = "0.4"
