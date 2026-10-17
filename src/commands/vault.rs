@@ -169,6 +169,8 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
 pub(crate) async fn cmd_extract(vault_path: &Path, source: &str, dest: &Path) -> Result<()> {
     info!("Extracting file from vault");
 
+    ensure_destination_free(dest)?;
+
     let password = prompt_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
@@ -200,6 +202,22 @@ pub(crate) async fn cmd_extract(vault_path: &Path, source: &str, dest: &Path) ->
         size
     );
 
+    Ok(())
+}
+
+/// Refuse an extract destination that already exists, including a symlink.
+///
+/// The core export writes the plaintext with mode 0600 and will not replace an
+/// existing path; this early check, which does not follow symlinks, only gives
+/// a clear error before the vault is opened.
+fn ensure_destination_free(dest: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(dest).is_ok() {
+        anyhow::bail!(
+            "Destination {} already exists; refusing to overwrite it or follow a symlink. \
+             Choose a path that does not exist.",
+            dest.display()
+        );
+    }
     Ok(())
 }
 
@@ -295,4 +313,32 @@ pub(crate) async fn cmd_info(path: &Path) -> Result<()> {
     println!("    Parallelism: {}", config.kdf_params.parallelism);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_destination_must_not_exist() {
+        let dir = std::env::temp_dir().join(format!("axiom-extract-dest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let fresh = dir.join("fresh.txt");
+        assert!(ensure_destination_free(&fresh).is_ok());
+
+        let existing = dir.join("existing.txt");
+        std::fs::write(&existing, b"keep").unwrap();
+        let err = ensure_destination_free(&existing).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+
+        #[cfg(unix)]
+        {
+            let dangling = dir.join("dangling-link");
+            std::os::unix::fs::symlink(dir.join("missing-target"), &dangling).unwrap();
+            assert!(ensure_destination_free(&dangling).is_err());
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -185,18 +185,26 @@ fn decode_hex_secret(value: &str) -> Result<Vec<u8>> {
     }
 
     let mut bytes = Vec::with_capacity(cleaned.len() / 2);
-    for pair in cleaned.as_bytes().as_chunks::<2>().0 {
-        let hi = decode_hex_nibble(pair[0] as char)?;
-        let lo = decode_hex_nibble(pair[1] as char)?;
+    for (index, pair) in cleaned.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let hi = decode_hex_nibble(pair[0], index * 2)?;
+        let lo = decode_hex_nibble(pair[1], index * 2 + 1)?;
         bytes.push((hi << 4) | lo);
     }
     Ok(bytes)
 }
 
-fn decode_hex_nibble(ch: char) -> Result<u8> {
-    ch.to_digit(16)
+/// Decode one hex digit. The error names only the byte position, never the
+/// byte itself, so a typo does not leak part of the secret.
+fn decode_hex_nibble(byte: u8, position: usize) -> Result<u8> {
+    (byte as char)
+        .to_digit(16)
         .map(|digit| digit as u8)
-        .ok_or_else(|| anyhow!("invalid hex digit '{ch}'"))
+        .ok_or_else(|| {
+            anyhow!(
+                "invalid hex digit at byte position {position} \
+                 (whitespace and underscores are not counted)"
+            )
+        })
 }
 
 fn format_hardware_key_status(config: &VaultConfig, include_metadata: bool) -> String {
@@ -291,6 +299,14 @@ mod tests {
     fn rejects_odd_length_hex_secret() {
         let err = decode_hardware_secret("hex:abc").unwrap_err();
         assert!(err.to_string().contains("even number of digits"));
+    }
+
+    #[test]
+    fn invalid_hex_error_reports_position_without_the_character() {
+        let err = decode_hardware_secret("hex:61 6Q").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("byte position 3"), "{message}");
+        assert!(!message.contains('Q'), "{message}");
     }
 
     #[test]

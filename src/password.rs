@@ -37,6 +37,39 @@ pub(crate) fn prompt_password(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
+/// Refuse a password-changing command while a password env var is set.
+///
+/// With the env var set, every prompt returns the same value, so the old and
+/// new passwords would be identical and the command would silently do nothing.
+pub(crate) fn ensure_no_env_password(command: &str) -> Result<()> {
+    let set_var = PASSWORD_ENV_VARS
+        .into_iter()
+        .find(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    refuse_env_password(set_var, command)
+}
+
+fn refuse_env_password(set_var: Option<&str>, command: &str) -> Result<()> {
+    if let Some(name) = set_var {
+        anyhow::bail!(
+            "{name} is set, so `{command}` would reuse it for every password prompt \
+             and change nothing. Unset {name} and run `{command}` again interactively."
+        );
+    }
+    Ok(())
+}
+
+/// Allow recovery words to be printed only to an interactive terminal, so they
+/// never end up in a file, a pipe or a log.
+pub(crate) fn may_print_recovery_words(stdout_is_tty: bool) -> Result<()> {
+    if !stdout_is_tty {
+        anyhow::bail!(
+            "Refusing to print the recovery key: standard output is not a terminal. \
+             Run this command interactively, without redirecting or piping its output."
+        );
+    }
+    Ok(())
+}
+
 /// Display recovery words and prompt user to confirm they've saved them.
 pub(crate) fn display_recovery_words(words: &str) {
     println!();
@@ -108,6 +141,47 @@ mod tests {
 
         restore_env("AXIOM_PASSWORD", original_axiom);
         restore_env("AXIOMVAULT_PASSWORD", original_legacy);
+    }
+
+    #[test]
+    fn env_password_refuses_password_change() {
+        let err = refuse_env_password(Some("AXIOM_PASSWORD"), "axiom password change")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Unset AXIOM_PASSWORD"), "{err}");
+        assert!(err.contains("axiom password change"), "{err}");
+    }
+
+    #[test]
+    fn no_env_password_allows_password_change() {
+        assert!(refuse_env_password(None, "axiom password reset").is_ok());
+    }
+
+    #[test]
+    fn ensure_no_env_password_detects_legacy_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_axiom = std::env::var("AXIOM_PASSWORD").ok();
+        let original_legacy = std::env::var("AXIOMVAULT_PASSWORD").ok();
+
+        std::env::remove_var("AXIOM_PASSWORD");
+        std::env::set_var("AXIOMVAULT_PASSWORD", "legacy-secret");
+        let err = ensure_no_env_password("axiom password reset").unwrap_err();
+        assert!(err.to_string().contains("AXIOMVAULT_PASSWORD"));
+
+        restore_env("AXIOM_PASSWORD", original_axiom);
+        restore_env("AXIOMVAULT_PASSWORD", original_legacy);
+    }
+
+    #[test]
+    fn recovery_words_refused_when_stdout_is_not_a_tty() {
+        let err = may_print_recovery_words(false).unwrap_err().to_string();
+        assert!(err.contains("not a terminal"), "{err}");
+        assert!(err.contains("interactively"), "{err}");
+    }
+
+    #[test]
+    fn recovery_words_allowed_on_a_tty() {
+        assert!(may_print_recovery_words(true).is_ok());
     }
 
     fn restore_env(key: &str, value: Option<String>) {

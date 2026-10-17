@@ -2,7 +2,8 @@
 use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
-    display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    display_recovery_words, ensure_no_env_password, kdf_params_from, may_print_recovery_words,
+    prompt_password, validate_password_strength,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -18,6 +19,7 @@ use axiomvault_vault::{
     check_migration_needed, check_vault_health, check_vault_structure, MigrationRegistry,
     MigrationStatus, VaultConfig, VaultManager, VaultOperations, VaultVersion,
 };
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,6 +30,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) async fn cmd_change_password(path: &Path) -> Result<()> {
     info!("Changing vault password");
+
+    ensure_no_env_password("axiom password change")?;
 
     let old_password = prompt_password("Enter current password: ")?;
     let new_password = prompt_password("Enter new password: ")?;
@@ -67,6 +71,8 @@ pub(crate) async fn cmd_change_password(path: &Path) -> Result<()> {
 pub(crate) async fn cmd_show_recovery_key(path: &Path) -> Result<()> {
     info!("Showing recovery key");
 
+    may_print_recovery_words(std::io::stdout().is_terminal())?;
+
     let password = prompt_password("Enter password: ")?;
     let path_str = path.to_string_lossy().to_string();
 
@@ -99,11 +105,13 @@ pub(crate) async fn cmd_show_recovery_key(path: &Path) -> Result<()> {
 pub(crate) async fn cmd_reset_password(path: &Path) -> Result<()> {
     info!("Resetting vault password using recovery key");
 
-    println!("Enter your 24-word recovery key (space-separated):");
-    let mut recovery_input = String::new();
-    std::io::stdin()
-        .read_line(&mut recovery_input)
-        .context("Failed to read recovery key")?;
+    ensure_no_env_password("axiom password reset")?;
+
+    // Read without echo; Zeroizing wipes the words when they go out of scope.
+    let recovery_input = Zeroizing::new(
+        rpassword::prompt_password("Enter your 24-word recovery key (space-separated): ")
+            .context("Failed to read recovery key")?,
+    );
     let recovery_words = recovery_input.trim();
 
     // Validate the recovery key format first.
@@ -130,8 +138,6 @@ pub(crate) async fn cmd_reset_password(path: &Path) -> Result<()> {
         .recover_vault("local", provider_config, recovery_words, &new_password)
         .await
         .context("Failed to reset password. Recovery key may be incorrect.")?;
-
-    recovery_input.zeroize();
 
     println!("Password reset successfully!");
 
