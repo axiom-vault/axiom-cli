@@ -376,6 +376,7 @@ mod tests {
             serde_json::json!({
                 "folder_id": "folder-1",
                 "credential_ref": GDRIVE_CREDENTIAL_REF,
+                // Not set by the CLI: core adds it in `persisted_provider_config` (core/vault/src/manager.rs:18-47 @ 5804c81).
                 "credential_schema": 1,
             })
         );
