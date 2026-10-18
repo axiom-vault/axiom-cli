@@ -130,6 +130,7 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `vault open` | Open vault interactively |
 | `vault info` | Display vault information |
 | `vault check` | Check vault health and integrity |
+| `vault list --root <DIR> [--depth N] [--json]` | Find vaults under DIR and show their unverified plaintext id, version and provider (no password; never opens a vault) |
 | `file list` | List vault contents |
 | `file add` | Add file to vault |
 | `file extract` | Extract file from vault |
@@ -159,6 +160,7 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `raid rebuild` | Rebuild degraded RAID shards |
 | `raid configure` | Configure RAID mode |
 | `mount webdav` | Serve the vault over WebDAV |
+| `mount list [--json]` | List your running `mount webdav` servers (listening address or `starting`) and, on Linux, FUSE mounts (Linux, macOS) |
 | `mount fuse` | Mount vault as a FUSE filesystem (requires `--features fuse`) |
 
 **KDF strength levels:**

@@ -161,6 +161,20 @@ pub(crate) enum VaultCommands {
         #[arg(long)]
         shallow: bool,
     },
+    /// Find vaults under a directory and show their unverified plaintext
+    /// header (id, version, provider). No password is needed: the values are
+    /// not authenticated and a crafted vault.config can show anything.
+    List {
+        /// Directory to search (repeatable).
+        #[arg(long, value_name = "DIR", required = true)]
+        root: Vec<PathBuf>,
+        /// Maximum directory depth below each root (the root is depth 0).
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        /// Print JSON instead of a tab-separated table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -452,6 +466,12 @@ pub(crate) enum MountCommands {
         #[arg(long, default_value_t = 8080)]
         port: u16,
     },
+    /// List the current user's running WebDAV servers and FUSE mounts (Linux, macOS).
+    List {
+        /// Print JSON instead of a tab-separated table.
+        #[arg(long)]
+        json: bool,
+    },
     #[cfg(feature = "fuse")]
     /// Mount vault contents as a FUSE filesystem.
     Fuse {
@@ -579,5 +599,40 @@ mod tests {
             } => assert_eq!(path, PathBuf::from("./vault")),
             _ => panic!("unexpected command tree"),
         }
+    }
+
+    #[test]
+    fn vault_list_requires_root() {
+        let err = Cli::try_parse_from(["axiom", "vault", "list"])
+            .err()
+            .expect("vault list without --root must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert!(err.to_string().contains("--root <DIR>"));
+    }
+
+    #[test]
+    fn parses_vault_list_and_mount_list() {
+        let cli = Cli::try_parse_from([
+            "axiom", "vault", "list", "--root", "/a", "--root", "/b", "--json",
+        ])
+        .expect("vault list should parse");
+        match cli.command {
+            Commands::Vault {
+                command: VaultCommands::List { root, depth, json },
+            } => {
+                assert_eq!(root, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+                assert_eq!(depth, 3);
+                assert!(json);
+            }
+            _ => panic!("unexpected command tree"),
+        }
+
+        let cli = Cli::try_parse_from(["axiom", "mount", "list"]).expect("mount list should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Mount {
+                command: MountCommands::List { json: false }
+            }
+        ));
     }
 }

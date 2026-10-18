@@ -19,6 +19,9 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             VaultCommands::Check { path, shallow } => {
                 commands::check::cmd_check(&path, shallow).await
             }
+            VaultCommands::List { root, depth, json } => {
+                commands::vault_list::cmd_vault_list(&root, depth, json)
+            }
         },
         Commands::File { command } => match command {
             FileCommands::List { vault_path, dir } => {
@@ -145,6 +148,7 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
         },
         Commands::Mount { command } => match command {
             MountCommands::Webdav { path, port } => commands::webdav::cmd_webdav(&path, port).await,
+            MountCommands::List { json } => commands::mount_list::cmd_mount_list(json),
             #[cfg(feature = "fuse")]
             MountCommands::Fuse {
                 path,
