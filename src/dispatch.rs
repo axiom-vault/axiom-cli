@@ -167,6 +167,10 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                 .await
             }
         },
+        // main runs `axiom agent` before any runtime exists; it never gets here.
+        Commands::Agent { .. } => {
+            bail!("internal error: `axiom agent` must run before the async runtime starts")
+        }
         Commands::Completions { shell, install } => {
             if install {
                 completions::install_completions(shell)?;
