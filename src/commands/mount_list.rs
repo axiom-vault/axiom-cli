@@ -64,7 +64,7 @@ pub(crate) fn cmd_mount_list(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Parse the arguments after argv[0]. Global flags may appear anywhere.
+/// Parse the arguments after `argv[0]`. Global flags may appear anywhere.
 pub(crate) fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<Invocation> {
     let mut it = args.into_iter();
     let mut positional = Vec::new();
