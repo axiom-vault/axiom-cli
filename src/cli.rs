@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// KDF strength level for key derivation.
@@ -114,6 +115,16 @@ pub(crate) enum Commands {
     Mount {
         #[command(subcommand)]
         command: MountCommands,
+    },
+    /// Run the key-holding agent for MCP/LLM access (serve, unlock, lock, status).
+    ///
+    /// Everything after `agent` is passed to the agent unchanged; see
+    /// `axiom agent --help`.
+    #[command(disable_help_flag = true)]
+    Agent {
+        /// Agent command and its arguments.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
     },
     /// Generate shell completions.
     Completions {
@@ -634,5 +645,38 @@ mod tests {
                 command: MountCommands::List { json: false }
             }
         ));
+    }
+
+    fn agent_args(argv: &[&str]) -> Vec<OsString> {
+        match Cli::try_parse_from(argv)
+            .expect("agent command should parse")
+            .command
+        {
+            Commands::Agent { args } => args,
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn agent_passes_arguments_through_verbatim() {
+        assert_eq!(
+            agent_args(&["axiom", "agent", "unlock", "--expect-uid", "1000"]),
+            ["unlock", "--expect-uid", "1000"]
+        );
+        assert_eq!(
+            agent_args(&["axiom", "agent", "serve", "--vault", "/v", "--allow-writes"]),
+            ["serve", "--vault", "/v", "--allow-writes"]
+        );
+        assert!(agent_args(&["axiom", "agent"]).is_empty());
+    }
+
+    #[test]
+    fn agent_help_reaches_the_agent() {
+        assert_eq!(agent_args(&["axiom", "agent", "--help"]), ["--help"]);
+        assert_eq!(agent_args(&["axiom", "agent", "-h"]), ["-h"]);
+        assert_eq!(
+            agent_args(&["axiom", "agent", "unlock", "--help"]),
+            ["unlock", "--help"]
+        );
     }
 }

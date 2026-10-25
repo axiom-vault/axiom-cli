@@ -106,6 +106,25 @@ axiom file list --vault-path ~/my-vault --password-file ~/.axiom-pw
 - Without a terminal and without `--password-file`, the command fails instead of waiting for input.
 - Unix only; on other platforms `--password-file` is refused.
 
+### LLM access through the agent (Unix)
+
+`axiom agent` runs the key-holding agent from axiom-core, so an LLM can use a vault through the MCP server `axiom-mcp` without ever seeing the password or key.
+The agent holds the only unlocked session and serves it on a Unix socket; you unlock it from your own terminal.
+
+```bash
+axiom agent serve --vault ~/my-vault [--allow-writes] [--root /sub] &
+axiom agent unlock   # in your own terminal; reads the password from the terminal only
+axiom agent status
+axiom agent lock
+```
+
+Then configure `axiom-mcp` from [axiom-core](https://github.com/axiom-vault/axiom-core) as the MCP server in your LLM client.
+Writes, import/export and the visible subtree are `serve` flags enforced by the agent; `axiom agent --help` lists them.
+`--password-file` is not accepted.
+
+This does not isolate the vault from your own user: any process running as your uid can use an unlocked vault within the agent's policy, and the password prompt is only as trustworthy as your shell.
+For the threat model and running the agent as a separate user, see [`core/agent/README.md`](https://github.com/axiom-vault/axiom-core/blob/release/2.0/core/agent/README.md).
+
 ### Google Drive
 
 ```bash
@@ -162,6 +181,7 @@ axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 | `mount webdav` | Serve the vault over WebDAV |
 | `mount list [--json]` | List your running `mount webdav` servers (listening address or `starting`) and, on Linux, FUSE mounts (Linux, macOS) |
 | `mount fuse` | Mount vault as a FUSE filesystem (requires `--features fuse`) |
+| `agent serve\|unlock\|lock\|status` | Run and control the key-holding agent for `axiom-mcp` (Unix only) |
 
 **KDF strength levels:**
 
