@@ -34,7 +34,7 @@ yay -S axiom-bin
 # Requires Rust stable. The git dependency on axiom-core is not yet on crates.io.
 cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli --bin axiom
 
-# Optional FUSE mount support (requires libfuse3-dev on Linux or macFUSE on macOS)
+# Optional FUSE mount support (see "FUSE mount" below; macOS needs macFUSE)
 cargo install --git https://github.com/axiom-vault/axiom-cli axiomvault-cli --bin axiom --features fuse
 ```
 
@@ -106,6 +106,21 @@ axiom file list --vault-path ~/my-vault --password-file ~/.axiom-pw
 - Without a terminal and without `--password-file`, the command fails instead of waiting for input.
 - Unix only; on other platforms `--password-file` is refused.
 
+### Recovery key
+
+`vault create` shows a 24-word recovery key once.
+By default it is printed to the terminal, followed by a "Press Enter" prompt; the key is never printed to a redirected or piped standard output, and the command refuses to run that way.
+For scripts, write the key to a new file instead:
+
+```bash
+axiom vault create --name MyVault --path ~/my-vault --recovery-out ~/my-vault.recovery </dev/null
+```
+
+- The file is created with mode `0600` and must not exist yet; an existing file is never overwritten, and this is checked before the vault is created.
+- The words are written space-separated on one line, the format `password reset` asks for. They are not printed and there is no prompt.
+- When standard input is not a terminal (a pipe, `</dev/null`, CI, a systemd unit), the "Press Enter" prompt is skipped, so `echo | axiom vault create ...` is no longer needed.
+- The new password is still prompted on the terminal (see above).
+
 ### LLM access through the agent (Unix)
 
 `axiom agent` runs the key-holding agent from axiom-core, so an LLM can use a vault through the MCP server `axiom-mcp` without ever seeing the password or key.
@@ -141,11 +156,20 @@ axiom sync status --vault-path ~/my-vault
 axiom sync configure --vault-path ~/my-vault --mode periodic --interval 300
 ```
 
+### FUSE mount
+
+Build with `--features fuse`.
+On Linux the mount is done in pure Rust: building, including cross-compiling (`cross build --release --target aarch64-unknown-linux-gnu --features fuse --bin axiom`), needs no `libfuse3-dev`, and at runtime only the `fusermount3` binary is needed (package `fuse3` on Debian, Ubuntu and Fedora).
+On macOS, building and mounting need macFUSE.
+
+`axiom mount fuse` runs in the foreground until you stop it with Ctrl+C.
+To keep it running, start it with `&`, in a terminal multiplexer such as tmux, or as a systemd unit.
+
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `vault create` | Create a new encrypted vault |
+| `vault create [--recovery-out <FILE>]` | Create a new encrypted vault; optionally write the recovery key to a new 0600 file instead of printing it |
 | `vault open` | Open vault interactively |
 | `vault info` | Display vault information |
 | `vault check` | Check vault health and integrity |
