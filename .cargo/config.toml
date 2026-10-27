@@ -14,3 +14,11 @@ rustflags = [
 [env]
 # Also set LIBRARY_PATH as a fallback
 LIBRARY_PATH = { value = "/usr/lib64:/usr/lib:/lib64:/lib", force = true }
+
+[target.'cfg(target_arch = "aarch64")']
+# chacha20 0.9 only uses its NEON backend when this cfg is set; without it
+# aarch64 builds fall back to scalar ChaCha20. Measured on an RK3399 Cortex-A72:
+# XChaCha20-Poly1305 125 -> 169 MiB/s (+35%). Output is byte-identical.
+# A RUSTFLAGS environment variable overrides this table, so builds that set
+# RUSTFLAGS must pass `--cfg chacha20_force_neon` themselves.
+rustflags = ["--cfg", "chacha20_force_neon"]
