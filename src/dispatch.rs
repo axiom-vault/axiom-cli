@@ -13,7 +13,8 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                 name,
                 path,
                 strength,
-            } => commands::vault::cmd_create(&name, &path, strength).await,
+                recovery_out,
+            } => commands::vault::cmd_create(&name, &path, strength, recovery_out.as_deref()).await,
             VaultCommands::Open { path } => commands::vault::cmd_open(&path).await,
             VaultCommands::Info { path } => commands::vault::cmd_info(&path).await,
             VaultCommands::Check { path, shallow } => {

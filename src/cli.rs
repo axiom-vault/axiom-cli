@@ -150,6 +150,10 @@ pub(crate) enum VaultCommands {
         /// KDF strength level.
         #[arg(short, long, value_enum, default_value_t = KdfStrength::Moderate)]
         strength: KdfStrength,
+        /// Write the recovery key to this new file (mode 0600) instead of
+        /// printing it. An existing file is never overwritten.
+        #[arg(long, value_name = "FILE")]
+        recovery_out: Option<PathBuf>,
     },
     /// Open an existing vault and start interactive session.
     Open {

@@ -2,8 +2,8 @@
 use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
-    display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
-    vault_password,
+    check_recovery_out, display_recovery_words, kdf_params_from, may_print_recovery_words,
+    prompt_password, validate_password_strength, vault_password, write_recovery_words,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -19,6 +19,7 @@ use axiomvault_vault::{
     check_migration_needed, check_vault_health, check_vault_structure, MigrationRegistry,
     MigrationStatus, VaultConfig, VaultManager, VaultOperations, VaultVersion,
 };
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -27,8 +28,21 @@ use tracing::info;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
-pub(crate) async fn cmd_create(name: &str, path: &Path, strength: KdfStrength) -> Result<()> {
+pub(crate) async fn cmd_create(
+    name: &str,
+    path: &Path,
+    strength: KdfStrength,
+    recovery_out: Option<&Path>,
+) -> Result<()> {
     info!("Creating new vault");
+
+    // Know where the recovery key can go before asking for a password.
+    match recovery_out {
+        Some(out) => check_recovery_out(out)?,
+        None => may_print_recovery_words(std::io::stdout().is_terminal()).context(
+            "Cannot show the recovery key here; pass --recovery-out <FILE> to write it to a file instead",
+        )?,
+    }
 
     let kdf_params = kdf_params_from(strength);
 
@@ -54,11 +68,24 @@ pub(crate) async fn cmd_create(name: &str, path: &Path, strength: KdfStrength) -
         .await
         .context("Failed to create vault")?;
 
+    if let Some(out) = recovery_out {
+        write_recovery_words(out, &creation.recovery_words).with_context(|| {
+            format!(
+                "The vault was created, but its recovery key was not saved. \
+                 Show it with `axiom recovery show-key --path {}`",
+                path.display()
+            )
+        })?;
+    }
+
     println!("Vault created successfully!");
     println!("  ID: {}", creation.session.vault_id());
     println!("  Location: {}", path.display());
     println!("  Provider: {}", creation.session.config().provider_type);
-    display_recovery_words(&creation.recovery_words);
+    match recovery_out {
+        Some(out) => println!("  Recovery key: written to {}", out.display()),
+        None => display_recovery_words(&creation.recovery_words),
+    }
 
     Ok(())
 }
