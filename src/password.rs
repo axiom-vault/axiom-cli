@@ -128,7 +128,43 @@ pub(crate) fn may_print_recovery_words(stdout_is_tty: bool) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a `--recovery-out` path that already exists, so this is known before
+/// the vault is created rather than after.
+pub(crate) fn check_recovery_out(path: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(path).is_ok() {
+        anyhow::bail!(
+            "--recovery-out {} already exists; it is never overwritten",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Write recovery words, space-separated on one line, to a new file that only
+/// the owner can read. Fails if the file already exists. The words are written
+/// straight from the caller's buffer, so no unzeroized copy is made.
+pub(crate) fn write_recovery_words(path: &Path, words: &str) -> Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Failed to create --recovery-out {}", path.display()))?;
+    file.write_all(words.as_bytes())
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("Failed to write --recovery-out {}", path.display()))
+}
+
 /// Display recovery words and prompt user to confirm they've saved them.
+/// The prompt is skipped when stdin is not a terminal, where nobody could
+/// answer it and it would only hang a script, CI job or service.
 pub(crate) fn display_recovery_words(words: &str) {
     println!();
     println!("=== RECOVERY KEY ===");
@@ -144,9 +180,13 @@ pub(crate) fn display_recovery_words(words: &str) {
     println!("WARNING: This is the only time the recovery key will be shown.");
     println!("If you lose it, you will not be able to recover your vault.");
     println!();
-    print!("Press Enter after you have written down the recovery key...");
 
-    use std::io::Write;
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+
+    print!("Press Enter after you have written down the recovery key...");
     std::io::stdout().flush().ok();
 
     let mut buf = String::new();
@@ -243,5 +283,40 @@ mod tests {
     #[test]
     fn recovery_words_allowed_on_a_tty() {
         assert!(may_print_recovery_words(true).is_ok());
+    }
+
+    fn scratch_path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("axiom-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn recovery_out_writes_words_to_a_new_file() {
+        let path = scratch_path("recovery-new");
+        check_recovery_out(&path).unwrap();
+        write_recovery_words(&path, "abandon ability able").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "abandon ability able\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn recovery_out_never_overwrites_an_existing_file() {
+        let path = scratch_path("recovery-existing");
+        std::fs::write(&path, "keep me").unwrap();
+        let err = check_recovery_out(&path).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+        assert!(write_recovery_words(&path, "abandon ability able").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep me");
+        std::fs::remove_file(&path).unwrap();
     }
 }
