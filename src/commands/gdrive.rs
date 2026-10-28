@@ -304,7 +304,7 @@ pub(crate) async fn cmd_gdrive_create(
     let tokens: Tokens =
         serde_json::from_str(&tokens_json).context("Failed to parse tokens file")?;
 
-    let vault_id = VaultId::new(name).context("Invalid vault name")?;
+    let vault_id = VaultId::unique(name).context("Invalid vault name")?;
 
     let (manager, provider_config) = gdrive_manager(tokens, folder_id);
 

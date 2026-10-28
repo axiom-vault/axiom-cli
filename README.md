@@ -79,6 +79,12 @@ mkdir -p ~/my-vault-mount
 axiom mount fuse --path ~/my-vault ~/my-vault-mount
 ```
 
+### Vault ID
+
+`vault create` and `remote gdrive create` give each new vault an ID made of `--name` and a random suffix, for example `MyVault-3f2c9a1e0b7d4c6e8a5f1b2d3c4e5f60`, and print it.
+Two vaults created with the same name therefore never share an ID, and a deleted vault can be recreated under its old name at the same path.
+Existing vaults keep the ID they were created with.
+
 ### Hardware-key response
 
 `hardware-key enroll`, `test` and `open` prompt for the YubiKey challenge-response bytes and read them from the terminal with echo off.
