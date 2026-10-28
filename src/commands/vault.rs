@@ -55,7 +55,7 @@ pub(crate) async fn cmd_create(
 
     validate_password_strength(&password)?;
 
-    let vault_id = VaultId::new(name).context("Invalid vault name")?;
+    let vault_id = VaultId::unique(name).context("Invalid vault name")?;
     let vault_path = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();

@@ -141,7 +141,7 @@ pub(crate) enum Commands {
 pub(crate) enum VaultCommands {
     /// Create a new vault.
     Create {
-        /// Vault name/identifier.
+        /// Vault name. The vault ID is this name plus a random suffix.
         #[arg(short, long)]
         name: String,
         /// Path to store the vault.
@@ -342,7 +342,7 @@ pub(crate) enum GdriveCommands {
     },
     /// Create a vault on Google Drive.
     Create {
-        /// Vault name/identifier.
+        /// Vault name. The vault ID is this name plus a random suffix.
         #[arg(short, long)]
         name: String,
         /// Google Drive folder ID where vault will be stored.
