@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
+use serde::de::DeserializeOwned;
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use url::Url;
@@ -121,72 +122,115 @@ where
     }
 }
 
-pub(crate) async fn write_secret_file(path: &Path, contents: &str) -> Result<()> {
-    write_secret_file_with_hook(path, contents, |_| Ok(())).await
+/// Largest token file read; a real one is well under 4 KiB.
+pub(crate) const MAX_TOKENS_FILE_BYTES: u64 = 64 * 1024;
+
+/// Read and parse a token file, refusing one larger than `MAX_TOKENS_FILE_BYTES`.
+pub(crate) async fn read_tokens<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let read_error = || format!("Failed to read tokens file {}", path.display());
+    let mut json = String::new();
+    tokio::fs::File::open(path)
+        .await
+        .with_context(read_error)?
+        .take(MAX_TOKENS_FILE_BYTES + 1)
+        .read_to_string(&mut json)
+        .await
+        .with_context(read_error)?;
+    if json.len() as u64 > MAX_TOKENS_FILE_BYTES {
+        anyhow::bail!("Tokens file {} is larger than 64 KiB", path.display());
+    }
+    serde_json::from_str(&json).context("Failed to parse tokens file")
 }
 
-async fn write_secret_file_with_hook<F>(path: &Path, contents: &str, before_rename: F) -> Result<()>
-where
-    F: FnOnce(&Path) -> Result<()>,
-{
-    #[cfg(unix)]
-    {
-        let temp_path = secret_temp_path(path)?;
-        let mut file = tokio::fs::OpenOptions::new()
+/// Publish the token file atomically: write a private temporary file beside it,
+/// sync it, check that it is owner-only, then rename it into place. Only a
+/// regular file that already holds tokens of type `T` is replaced; any other
+/// existing path, including a symlink, is refused.
+#[cfg(unix)]
+pub(crate) async fn save_tokens<T: DeserializeOwned>(
+    output: &Path,
+    default_dir: Option<&Path>,
+    json: &[u8],
+) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Ok(existing) = tokio::fs::symlink_metadata(output).await {
+        if !existing.is_file() || read_tokens::<T>(output).await.is_err() {
+            anyhow::bail!(
+                "{} already exists and is not a token file; refusing to overwrite it",
+                output.display()
+            );
+        }
+    }
+    if let Some(dir) = default_dir {
+        tokio::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .await
+            .context("Failed to create token directory")?;
+    }
+
+    let mut tmp_name = output
+        .file_name()
+        .context("Token file path has no file name")?
+        .to_os_string();
+    tmp_name.push(".tmp");
+    let tmp_path = output.with_file_name(tmp_name);
+
+    // Remove any stale file so the new one is created fresh with 0o600.
+    // The mode flag in OpenOptions only applies on creation.
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    let published = async {
+        let mut f = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&temp_path)
+            .open(&tmp_path)
             .await
-            .context("Failed to create temporary token file")?;
-
-        file.write_all(contents.as_bytes())
+            .context("Failed to create token file")?;
+        f.write_all(json)
             .await
             .context("Failed to write tokens file")?;
-        file.sync_all()
-            .await
-            .context("Failed to flush tokens file to disk")?;
-        drop(file);
-
-        if let Err(error) = before_rename(&temp_path) {
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(error);
+        f.sync_all().await.context("Failed to write tokens file")?;
+        let mode = f.metadata().await?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            anyhow::bail!("Token file permissions are {mode:o}, expected owner-only");
         }
-
-        tokio::fs::rename(&temp_path, path)
+        tokio::fs::rename(&tmp_path, output)
             .await
-            .context("Failed to atomically replace token file")?;
-        // Durability requires syncing the parent directory after rename so the
-        // directory entry for the new token file is persisted before success.
-        sync_parent_directory(path)
-            .await
-            .context("Failed to flush token parent directory to disk")?;
-        Ok(())
+            .context("Failed to publish tokens file")
     }
-
-    #[cfg(not(unix))]
-    {
-        let _ = before_rename;
-        tokio::fs::write(path, contents).await.context(
-            "Failed to write tokens file (non-Unix platforms use a non-atomic fallback; prefer a protected directory)",
-        )?;
-        Ok(())
+    .await;
+    if published.is_err() {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
     }
-}
+    published?;
 
-#[cfg(unix)]
-async fn sync_parent_directory(path: &Path) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("Token path has no parent directory"))?;
-    let directory = tokio::fs::File::open(parent)
+    // Sync the directory too, so the rename survives a crash.
+    let dir = match output.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    tokio::fs::File::open(dir)
         .await
-        .context("Failed to open token parent directory")?;
-    directory
+        .context("Failed to open token directory")?
         .sync_all()
         .await
-        .context("Failed to sync token parent directory")?;
-    Ok(())
+        .context("Failed to sync token directory")
+}
+
+/// Owner-only permissions are not verified here, so refuse to write tokens.
+#[cfg(not(unix))]
+pub(crate) async fn save_tokens<T: DeserializeOwned>(
+    _output: &Path,
+    _default_dir: Option<&Path>,
+    _json: &[u8],
+) -> Result<()> {
+    anyhow::bail!(
+        "Saving OAuth tokens is supported only on Unix, where owner-only permissions can be checked"
+    )
 }
 
 #[derive(Debug)]
@@ -303,29 +347,11 @@ async fn write_html_response(
         .context("Failed to write OAuth callback response")
 }
 
-fn secret_temp_path(path: &Path) -> Result<PathBuf> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| anyhow!("Token file path must include a file name"))?
-        .to_string_lossy();
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .context("System clock is before UNIX_EPOCH")?
-        .as_nanos();
-
-    Ok(parent.join(format!(
-        ".{file_name}.tmp.{}.{}",
-        std::process::id(),
-        unique
-    )))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use axiomvault_storage::gdrive::Tokens;
+    use std::path::PathBuf;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -397,50 +423,77 @@ mod tests {
         assert!(error.error.to_string().contains("CSRF token mismatch"));
     }
 
-    #[tokio::test]
-    async fn write_secret_file_replaces_existing_contents() {
-        let path = temp_test_path("replace");
-
-        write_secret_file(&path, "first").await.unwrap();
-        write_secret_file(&path, "second").await.unwrap();
-
-        let contents = tokio::fs::read_to_string(&path).await.unwrap();
-        assert_eq!(contents, "second");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
+    fn test_tokens() -> Tokens {
+        Tokens {
+            access_token: "access-secret".to_string(),
+            refresh_token: "refresh-secret".to_string(),
+            expires_at: chrono::Utc::now(),
         }
+    }
 
-        let _ = tokio::fs::remove_file(&path).await;
+    fn token_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("axiom-oauth-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn write_secret_file_preserves_existing_contents_when_rename_aborted() {
-        let path = temp_test_path("preserve");
-        let temp_path = Arc::new(Mutex::new(None::<PathBuf>));
+    async fn save_tokens_replaces_only_a_token_file_and_keeps_it_private() {
+        use std::os::unix::fs::PermissionsExt;
 
-        write_secret_file(&path, "original").await.unwrap();
-        let captured_temp_path = Arc::clone(&temp_path);
+        let dir = token_test_dir("save");
+        let output = dir.join("tokens.json");
+        let mut rotated = test_tokens();
+        rotated.access_token = "rotated-access".to_string();
 
-        let error = write_secret_file_with_hook(&path, "updated", move |pending_path| {
-            *captured_temp_path.lock().unwrap() = Some(pending_path.to_path_buf());
-            Err(anyhow!("simulated rename abort"))
-        })
-        .await
-        .unwrap_err();
+        save_tokens::<Tokens>(&output, None, &serde_json::to_vec(&test_tokens()).unwrap())
+            .await
+            .unwrap();
+        // Re-authentication replaces the previous token file.
+        save_tokens::<Tokens>(&output, None, &serde_json::to_vec(&rotated).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            read_tokens::<Tokens>(&output).await.unwrap().access_token,
+            "rotated-access"
+        );
+        let mode = std::fs::metadata(&output).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "temp file left"
+        );
 
-        assert!(error.to_string().contains("simulated rename abort"));
-        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), "original");
+        let json = serde_json::to_vec(&rotated).unwrap();
+        let other = dir.join("notes.txt");
+        std::fs::write(&other, b"keep").unwrap();
+        assert!(save_tokens::<Tokens>(&other, None, &json).await.is_err());
+        assert_eq!(std::fs::read(&other).unwrap(), b"keep");
 
-        let pending_path = temp_path.lock().unwrap().clone().unwrap();
-        assert!(!pending_path.exists());
+        let link = dir.join("link.json");
+        std::os::unix::fs::symlink(&output, &link).unwrap();
+        assert!(save_tokens::<Tokens>(&link, None, &json).await.is_err());
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
 
-        let _ = tokio::fs::remove_file(&path).await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_tokens_refuses_an_oversized_file() {
+        let dir = token_test_dir("oversized");
+        let path = dir.join("tokens.json");
+        std::fs::write(&path, vec![b' '; MAX_TOKENS_FILE_BYTES as usize + 1]).unwrap();
+
+        let err = read_tokens::<Tokens>(&path).await.unwrap_err().to_string();
+        assert!(err.contains("larger than 64 KiB"), "{err}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
@@ -466,17 +519,6 @@ mod tests {
         assert!(response.contains("Authentication Failed"));
         assert!(!response.contains("Authentication Successful"));
         assert!(error.to_string().contains("exchange failed"));
-    }
-
-    fn temp_test_path(label: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "axiom-remote-oauth-test-{label}-{}-{unique}",
-            std::process::id()
-        ))
     }
 
     async fn send_callback_request(path: &str) -> String {

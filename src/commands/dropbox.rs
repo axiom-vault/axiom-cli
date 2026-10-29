@@ -1,7 +1,7 @@
 use crate::cli::KdfStrength;
 use crate::commands::remote_oauth::{
-    complete_local_oauth_flow, resolve_optional_oauth_value, resolve_required_oauth_value,
-    write_secret_file,
+    complete_local_oauth_flow, read_tokens, resolve_optional_oauth_value,
+    resolve_required_oauth_value, save_tokens,
 };
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
@@ -67,7 +67,7 @@ pub(crate) async fn cmd_dropbox_auth(
                 .context("Failed to exchange authorization code")?;
             let tokens_json = serde_json::to_string_pretty(&tokens)
                 .context("Failed to serialize Dropbox tokens")?;
-            write_secret_file(output, &tokens_json).await?;
+            save_tokens::<DropboxTokens>(output, None, tokens_json.as_bytes()).await?;
             Ok(tokens)
         })
         .await?;
@@ -97,11 +97,7 @@ pub(crate) async fn cmd_dropbox_create(
     }
     validate_password_strength(&password)?;
 
-    let tokens_json = tokio::fs::read_to_string(tokens_path)
-        .await
-        .context("Failed to read tokens file")?;
-    let tokens: DropboxTokens =
-        serde_json::from_str(&tokens_json).context("Failed to parse tokens file")?;
+    let tokens: DropboxTokens = read_tokens(tokens_path).await?;
 
     let vault_id = VaultId::new(name).context("Invalid vault name")?;
     let manager = VaultManager::new();
@@ -131,11 +127,7 @@ pub(crate) async fn cmd_dropbox_open(root_path: &str, tokens_path: &Path) -> Res
     info!("Opening vault on Dropbox");
 
     let password = prompt_password("Enter password: ")?;
-    let tokens_json = tokio::fs::read_to_string(tokens_path)
-        .await
-        .context("Failed to read tokens file")?;
-    let tokens: DropboxTokens =
-        serde_json::from_str(&tokens_json).context("Failed to parse tokens file")?;
+    let tokens: DropboxTokens = read_tokens(tokens_path).await?;
 
     let dropbox_config = DropboxConfig {
         root_path: root_path.to_string(),
