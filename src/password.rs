@@ -137,28 +137,27 @@ pub(crate) fn check_recovery_out(path: &Path) -> Result<()> {
             path.display()
         );
     }
+    // `write_recovery_words` would refuse later, after the vault exists.
+    if cfg!(not(unix)) {
+        anyhow::bail!(
+            "--recovery-out is supported only on Unix, where owner-only permissions can be checked"
+        );
+    }
     Ok(())
 }
 
 /// Write recovery words, space-separated on one line, to a new file that only
-/// the owner can read. Fails if the file already exists. The words are written
-/// straight from the caller's buffer, so no unzeroized copy is made.
-pub(crate) fn write_recovery_words(path: &Path, words: &str) -> Result<()> {
-    use std::io::Write;
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("Failed to create --recovery-out {}", path.display()))?;
-    file.write_all(words.as_bytes())
-        .and_then(|()| file.write_all(b"\n"))
-        .and_then(|()| file.sync_all())
+/// the owner can read. Fails if the file already exists. The file is published
+/// atomically, so a failed write leaves no partial file; a file created at the
+/// path after the existence check would be replaced. The line is built in a
+/// zeroizing buffer, so no unzeroized copy is made.
+pub(crate) async fn write_recovery_words(path: &Path, words: &str) -> Result<()> {
+    check_recovery_out(path)?;
+    let mut line = Zeroizing::new(String::with_capacity(words.len() + 1));
+    line.push_str(words);
+    line.push('\n');
+    crate::private_file::write_private_file(path, line.as_bytes())
+        .await
         .with_context(|| format!("Failed to write --recovery-out {}", path.display()))
 }
 
@@ -291,31 +290,34 @@ mod tests {
         path
     }
 
-    #[test]
-    fn recovery_out_writes_words_to_a_new_file() {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recovery_out_writes_words_to_a_new_file() {
+        use std::os::unix::fs::PermissionsExt;
+
         let path = scratch_path("recovery-new");
         check_recovery_out(&path).unwrap();
-        write_recovery_words(&path, "abandon ability able").unwrap();
+        write_recovery_words(&path, "abandon ability able")
+            .await
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "abandon ability able\n"
         );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
         std::fs::remove_file(&path).unwrap();
     }
 
-    #[test]
-    fn recovery_out_never_overwrites_an_existing_file() {
+    #[tokio::test]
+    async fn recovery_out_never_overwrites_an_existing_file() {
         let path = scratch_path("recovery-existing");
         std::fs::write(&path, "keep me").unwrap();
         let err = check_recovery_out(&path).unwrap_err().to_string();
         assert!(err.contains("already exists"), "{err}");
-        assert!(write_recovery_words(&path, "abandon ability able").is_err());
+        assert!(write_recovery_words(&path, "abandon ability able")
+            .await
+            .is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep me");
         std::fs::remove_file(&path).unwrap();
     }
