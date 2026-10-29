@@ -81,7 +81,7 @@ axiom mount fuse --path ~/my-vault ~/my-vault-mount
 
 ### Vault ID
 
-`vault create` and `remote gdrive create` give each new vault an ID made of `--name` and a random suffix, for example `MyVault-3f2c9a1e0b7d4c6e8a5f1b2d3c4e5f60`, and print it.
+`vault create`, `remote gdrive create` and `remote dropbox create` give each new vault an ID made of `--name` and a random suffix, for example `MyVault-3f2c9a1e0b7d4c6e8a5f1b2d3c4e5f60`, and print it.
 Two vaults created with the same name therefore never share an ID, and a deleted vault can be recreated under its old name at the same path.
 Existing vaults keep the ID they were created with.
 
@@ -108,7 +108,7 @@ axiom file list --vault-path ~/my-vault --password-file ~/.axiom-pw
 
 - The file must be a regular file with no group or other permissions (`chmod 600`); otherwise it is refused.
 - Its bytes are used as-is, except that exactly one trailing `\n` or `\r\n` is stripped. An empty password is refused.
-- New passwords (`vault create`, `remote gdrive create`, and the new password for `password change` and `password reset`) are always prompted.
+- New passwords (`vault create`, `remote gdrive create`, `remote dropbox create`, and the new password for `password change` and `password reset`) are always prompted.
 - Without a terminal and without `--password-file`, the command fails instead of waiting for input.
 - Unix only; on other platforms `--password-file` is refused.
 

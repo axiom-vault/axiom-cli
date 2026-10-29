@@ -4,13 +4,15 @@ use crate::commands::remote_oauth::{
     resolve_required_oauth_value, save_tokens,
 };
 use crate::password::{
-    display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    display_recovery_words, kdf_params_from, may_print_recovery_words, prompt_password,
+    validate_password_strength, vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::VaultId;
 use axiomvault_storage::dropbox::{DropboxAuthConfig, DropboxAuthManager, DropboxTokens};
 use axiomvault_storage::{create_default_registry, CloudAuthorization};
 use axiomvault_vault::VaultManager;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -124,6 +126,9 @@ pub(crate) async fn cmd_dropbox_create(
 ) -> Result<()> {
     info!("Creating new vault on Dropbox: {}", name);
 
+    // Know the recovery key can be shown before asking for a password.
+    may_print_recovery_words(std::io::stdout().is_terminal())?;
+
     let kdf_params = kdf_params_from(strength);
     let password = prompt_password("Enter password: ")?;
     let confirm = prompt_password("Confirm password: ")?;
@@ -134,7 +139,7 @@ pub(crate) async fn cmd_dropbox_create(
 
     let tokens: DropboxTokens = read_tokens(tokens_path).await?;
 
-    let vault_id = VaultId::new(name).context("Invalid vault name")?;
+    let vault_id = VaultId::unique(name).context("Invalid vault name")?;
     let (manager, provider_config) = dropbox_manager(tokens, root_path);
 
     let creation = manager
@@ -153,7 +158,7 @@ pub(crate) async fn cmd_dropbox_create(
 pub(crate) async fn cmd_dropbox_open(root_path: &str, tokens_path: &Path) -> Result<()> {
     info!("Opening vault on Dropbox");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let tokens: DropboxTokens = read_tokens(tokens_path).await?;
     let (manager, provider_config) = dropbox_manager(tokens, root_path);
 
