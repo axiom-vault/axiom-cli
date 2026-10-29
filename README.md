@@ -162,7 +162,7 @@ axiom remote dropbox create --name CloudVault --root-path /AxiomVault --tokens ~
 axiom remote dropbox open --root-path /AxiomVault --tokens ~/dropbox-tokens.json
 ```
 
-`remote dropbox auth` accepts `--app-key` / `--app-secret` or falls back to `AXIOM_DROPBOX_APP_KEY` / `AXIOM_DROPBOX_APP_SECRET`. The legacy `AXIOMVAULT_DROPBOX_APP_KEY` / `AXIOMVAULT_DROPBOX_APP_SECRET` names remain supported. OAuth token files are only reported as successful after the code exchange and token save complete. On Unix, token files are written atomically with `0600` permissions, and an existing path is replaced only if it already holds Dropbox tokens; on other platforms saving tokens is refused.
+`remote dropbox auth` accepts `--app-key` / `--app-secret` or falls back to `AXIOM_DROPBOX_APP_KEY` / `AXIOM_DROPBOX_APP_SECRET`. The legacy `AXIOMVAULT_DROPBOX_APP_KEY` / `AXIOMVAULT_DROPBOX_APP_SECRET` names remain supported. The app key is saved in the token file next to the tokens, so `create` and `open` can refresh the access token after it expires. OAuth token files are only reported as successful after the code exchange and token save complete. On Unix, token files are written atomically with `0600` permissions, and an existing path is replaced only if it already holds Dropbox tokens; on other platforms saving tokens is refused.
 
 ### Sync
 
