@@ -8,12 +8,11 @@ use crate::password::{
 };
 use anyhow::{Context, Result};
 use axiomvault_common::VaultId;
-use axiomvault_storage::dropbox::{
-    DropboxAuthConfig, DropboxAuthManager, DropboxConfig, DropboxTokens,
-};
-use axiomvault_storage::CloudAuthorization;
+use axiomvault_storage::dropbox::{DropboxAuthConfig, DropboxAuthManager, DropboxTokens};
+use axiomvault_storage::{create_default_registry, CloudAuthorization};
 use axiomvault_vault::VaultManager;
 use std::path::Path;
+use std::sync::Arc;
 use tracing::info;
 
 const DROPBOX_REDIRECT_URL: &str = "http://localhost:8080/callback";
@@ -37,6 +36,42 @@ fn resolve_dropbox_app_secret(app_secret: Option<String>) -> Option<String> {
         std::env::var(AXIOM_DROPBOX_APP_SECRET_ENV).ok(),
         std::env::var(AXIOMVAULT_DROPBOX_APP_SECRET_ENV).ok(),
     )
+}
+
+/// Opaque, non-secret reference persisted in `vault.config` instead of tokens.
+const DROPBOX_CREDENTIAL_REF: &str = "local:dropbox:cli-tokens";
+
+/// Resolves `DROPBOX_CREDENTIAL_REF` to the tokens read from the local `--tokens` file.
+struct TokensFileResolver(DropboxTokens);
+
+impl axiomvault_vault::manager::LocalCredentialResolver for TokensFileResolver {
+    fn resolve(
+        &self,
+        provider_type: &str,
+        credential_ref: &str,
+    ) -> axiomvault_common::Result<serde_json::Value> {
+        if provider_type != "dropbox" || credential_ref != DROPBOX_CREDENTIAL_REF {
+            return Err(axiomvault_common::Error::NotFound(format!(
+                "Unknown credential reference '{credential_ref}'"
+            )));
+        }
+        let tokens = serde_json::to_value(&self.0)
+            .map_err(|error| axiomvault_common::Error::Serialization(error.to_string()))?;
+        Ok(serde_json::json!({ "tokens": tokens }))
+    }
+}
+
+/// Build a manager whose provider config carries only `root_path` and `credential_ref`.
+fn dropbox_manager(tokens: DropboxTokens, root_path: &str) -> (VaultManager, serde_json::Value) {
+    let manager = VaultManager::with_registry_and_credential_resolver(
+        create_default_registry(),
+        Arc::new(TokensFileResolver(tokens)),
+    );
+    let provider_config = serde_json::json!({
+        "root_path": root_path,
+        "credential_ref": DROPBOX_CREDENTIAL_REF,
+    });
+    (manager, provider_config)
 }
 
 pub(crate) async fn cmd_dropbox_auth(
@@ -100,15 +135,7 @@ pub(crate) async fn cmd_dropbox_create(
     let tokens: DropboxTokens = read_tokens(tokens_path).await?;
 
     let vault_id = VaultId::new(name).context("Invalid vault name")?;
-    let manager = VaultManager::new();
-
-    let dropbox_config = DropboxConfig {
-        root_path: root_path.to_string(),
-        tokens,
-        auth_config: None,
-    };
-    let provider_config =
-        serde_json::to_value(dropbox_config).context("Failed to serialize Dropbox config")?;
+    let (manager, provider_config) = dropbox_manager(tokens, root_path);
 
     let creation = manager
         .create_vault(vault_id, &password, "dropbox", provider_config, kdf_params)
@@ -128,16 +155,8 @@ pub(crate) async fn cmd_dropbox_open(root_path: &str, tokens_path: &Path) -> Res
 
     let password = prompt_password("Enter password: ")?;
     let tokens: DropboxTokens = read_tokens(tokens_path).await?;
+    let (manager, provider_config) = dropbox_manager(tokens, root_path);
 
-    let dropbox_config = DropboxConfig {
-        root_path: root_path.to_string(),
-        tokens,
-        auth_config: None,
-    };
-    let provider_config =
-        serde_json::to_value(dropbox_config).context("Failed to serialize Dropbox config")?;
-
-    let manager = VaultManager::new();
     let session = manager
         .open_vault("dropbox", provider_config, &password)
         .await
@@ -153,6 +172,75 @@ pub(crate) async fn cmd_dropbox_open(root_path: &str, tokens_path: &Path) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axiomvault_common::VaultPath;
+    use axiomvault_crypto::KdfParams;
+    use axiomvault_storage::{MemoryProvider, ProviderRegistry, StorageProvider};
+    use axiomvault_vault::manager::LocalCredentialResolver;
+    use axiomvault_vault::{InMemoryFreshnessAnchor, VaultConfig};
+
+    fn test_tokens() -> DropboxTokens {
+        DropboxTokens {
+            access_token: "access-secret".to_string(),
+            refresh_token: "refresh-secret".to_string(),
+            expires_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn dropbox_create_persists_reference_not_tokens() {
+        let storage = Arc::new(MemoryProvider::new());
+        let factory_storage = storage.clone();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .register(
+                "dropbox",
+                Box::new(move |config| {
+                    assert_eq!(config["tokens"]["access_token"], "access-secret");
+                    Ok(factory_storage.clone() as Arc<dyn StorageProvider>)
+                }),
+            )
+            .unwrap();
+        let manager = VaultManager::with_registry_credential_resolver_and_anchor(
+            registry,
+            Arc::new(TokensFileResolver(test_tokens())),
+            Arc::new(InMemoryFreshnessAnchor::new()),
+        );
+        let (_, provider_config) = dropbox_manager(test_tokens(), "/AxiomVault");
+
+        manager
+            .create_vault(
+                VaultId::new("dropbox-test").unwrap(),
+                b"correct horse battery staple",
+                "dropbox",
+                provider_config,
+                KdfParams::interactive(),
+            )
+            .await
+            .unwrap();
+
+        let config_bytes = storage
+            .download(&VaultPath::parse("vault.config").unwrap())
+            .await
+            .unwrap();
+        let config = VaultConfig::from_bytes(&config_bytes).unwrap();
+        assert_eq!(
+            config.provider_config,
+            serde_json::json!({
+                "root_path": "/AxiomVault",
+                "credential_ref": DROPBOX_CREDENTIAL_REF,
+                "credential_schema": 1,
+            })
+        );
+        let raw = String::from_utf8_lossy(&config_bytes);
+        assert!(!raw.contains("access-secret") && !raw.contains("refresh-secret"));
+    }
+
+    #[test]
+    fn resolver_rejects_unknown_references() {
+        let resolver = TokensFileResolver(test_tokens());
+        assert!(resolver.resolve("dropbox", "local:dropbox:other").is_err());
+        assert!(resolver.resolve("gdrive", DROPBOX_CREDENTIAL_REF).is_err());
+    }
 
     #[test]
     fn resolve_dropbox_app_key_prefers_primary_env_name() {
