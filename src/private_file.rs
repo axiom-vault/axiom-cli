@@ -6,22 +6,23 @@ use std::path::Path;
 /// Publish `bytes` at `path` atomically: write a private temporary file beside
 /// it, sync it, check that it is owner-only, rename it into place, then sync
 /// the directory. An existing file at `path` is replaced. On failure neither
-/// the temporary file nor a partial `path` is left behind.
+/// the temporary file nor a partial `path` is left behind. The temporary file
+/// has a random name, so no existing file beside `path` is touched.
 #[cfg(unix)]
 pub(crate) async fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncWriteExt;
 
-    let mut tmp_name = path
-        .file_name()
-        .with_context(|| format!("{} has no file name", path.display()))?
-        .to_os_string();
-    tmp_name.push(".tmp");
+    let mut suffix = [0u8; 8];
+    getrandom::fill(&mut suffix)
+        .map_err(|e| anyhow::anyhow!("OS random number generator failed: {e}"))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(
+        path.file_name()
+            .with_context(|| format!("{} has no file name", path.display()))?,
+    );
+    tmp_name.push(format!(".{:016x}.tmp", u64::from_ne_bytes(suffix)));
     let tmp_path = path.with_file_name(tmp_name);
-
-    // Remove any stale file so the new one is created fresh with 0o600.
-    // The mode flag in OpenOptions only applies on creation.
-    let _ = tokio::fs::remove_file(&tmp_path).await;
 
     let published = async {
         let mut f = tokio::fs::OpenOptions::new()
@@ -101,19 +102,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replaces_the_target_privately_and_clears_a_stale_temp_file() {
+    async fn replaces_the_target_privately_and_leaves_other_files_alone() {
         let dir = test_dir("replace");
         let target = dir.join("secret");
         std::fs::write(&target, b"old").unwrap();
-        // Left behind by an interrupted earlier write.
-        std::fs::write(dir.join("secret.tmp"), b"partial").unwrap();
+        // A file of the user's that only looks like a temporary file.
+        std::fs::write(dir.join("secret.tmp"), b"user data").unwrap();
 
         write_private_file(&target, b"new").await.unwrap();
 
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
         let mode = std::fs::metadata(&target).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-        assert_eq!(entries(&dir), ["secret"]);
+        assert_eq!(std::fs::read(dir.join("secret.tmp")).unwrap(), b"user data");
+        assert_eq!(entries(&dir), ["secret", "secret.tmp"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
