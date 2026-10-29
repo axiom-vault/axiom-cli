@@ -100,8 +100,6 @@ async fn read_tokens(path: &Path) -> Result<Tokens> {
 /// including a symlink, is refused.
 #[cfg(unix)]
 async fn save_tokens(output: &Path, default_dir: Option<&Path>, json: &[u8]) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     if let Ok(existing) = tokio::fs::symlink_metadata(output).await {
         if !existing.is_file() || read_tokens(output).await.is_err() {
             anyhow::bail!(
@@ -118,43 +116,9 @@ async fn save_tokens(output: &Path, default_dir: Option<&Path>, json: &[u8]) -> 
             .await
             .context("Failed to create token directory")?;
     }
-
-    let mut tmp_name = output
-        .file_name()
-        .context("Token file path has no file name")?
-        .to_os_string();
-    tmp_name.push(".tmp");
-    let tmp_path = output.with_file_name(tmp_name);
-
-    // Remove any stale file so the new one is created fresh with 0o600.
-    // The mode flag in OpenOptions only applies on creation.
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-
-    let published = async {
-        let mut f = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp_path)
-            .await
-            .context("Failed to create token file")?;
-        f.write_all(json)
-            .await
-            .context("Failed to write tokens file")?;
-        f.sync_all().await.context("Failed to write tokens file")?;
-        let mode = f.metadata().await?.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
-            anyhow::bail!("Token file permissions are {mode:o}, expected owner-only");
-        }
-        tokio::fs::rename(&tmp_path, output)
-            .await
-            .context("Failed to publish tokens file")
-    }
-    .await;
-    if published.is_err() {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-    }
-    published
+    crate::private_file::write_private_file(output, json)
+        .await
+        .context("Failed to save tokens file")
 }
 
 /// Owner-only permissions are not verified here, so refuse to write tokens.
