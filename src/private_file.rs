@@ -1,0 +1,65 @@
+//! Atomic, owner-only writes for files that hold secret material.
+
+use anyhow::{Context, Result};
+use std::path::Path;
+
+/// Publish `bytes` at `path` atomically: write a private temporary file beside
+/// it, sync it, check that it is owner-only, then rename it into place. An
+/// existing file at `path` is replaced. On failure neither the temporary file
+/// nor a partial `path` is left behind.
+#[cfg(unix)]
+pub(crate) async fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::AsyncWriteExt;
+
+    let mut tmp_name = path
+        .file_name()
+        .with_context(|| format!("{} has no file name", path.display()))?
+        .to_os_string();
+    tmp_name.push(".tmp");
+    let tmp_path = path.with_file_name(tmp_name);
+
+    // Remove any stale file so the new one is created fresh with 0o600.
+    // The mode flag in OpenOptions only applies on creation.
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    let published = async {
+        let mut f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)
+            .await
+            .with_context(|| format!("Failed to create {}", tmp_path.display()))?;
+        f.write_all(bytes)
+            .await
+            .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
+        f.sync_all()
+            .await
+            .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
+        let mode = f.metadata().await?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            anyhow::bail!(
+                "{} has permissions {mode:o}, expected owner-only",
+                tmp_path.display()
+            );
+        }
+        tokio::fs::rename(&tmp_path, path)
+            .await
+            .with_context(|| format!("Failed to rename {} into place", tmp_path.display()))
+    }
+    .await;
+    if published.is_err() {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+    }
+    published
+}
+
+/// Owner-only permissions cannot be set and checked here, so refuse to write.
+#[cfg(not(unix))]
+pub(crate) async fn write_private_file(path: &Path, _bytes: &[u8]) -> Result<()> {
+    anyhow::bail!(
+        "Refusing to write {}: secret files are written only on Unix, where owner-only permissions can be checked",
+        path.display()
+    )
+}
