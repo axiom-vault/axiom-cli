@@ -26,7 +26,7 @@ jobs:
     name: Core revision consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Test the revision checker
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -40,7 +40,7 @@ jobs:
     needs: revisions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -77,12 +77,12 @@ jobs:
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
       - name: Check out CLI
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: cli
 
       - name: Check out axiom-core
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: axiom-vault/axiom-core
           ref: ${{ steps.core.outputs.ref }}
