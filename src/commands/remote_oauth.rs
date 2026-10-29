@@ -44,7 +44,21 @@ where
     let listener = TcpListener::bind(OAUTH_CALLBACK_ADDR).await.context(
         "Failed to start local server on port 8080. Is another process using this port?",
     )?;
+    complete_oauth_flow_on(listener, provider_name, auth_url, csrf_token, exchange_code).await
+}
 
+/// The flow on an already bound callback listener, so tests can use any port.
+async fn complete_oauth_flow_on<T, F, Fut>(
+    listener: TcpListener,
+    provider_name: &str,
+    auth_url: &str,
+    csrf_token: &str,
+    exchange_code: F,
+) -> Result<T>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
     println!("Starting {provider_name} authentication...");
     println!();
     println!("Opening your browser to authorize AxiomVault...");
@@ -519,8 +533,11 @@ mod tests {
 
     #[tokio::test]
     async fn complete_local_oauth_flow_returns_browser_failure_on_exchange_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
         let flow = tokio::spawn(async move {
-            complete_local_oauth_flow(
+            complete_oauth_flow_on(
+                listener,
                 "Dropbox",
                 "http://localhost/authorize",
                 "csrf-token",
@@ -532,7 +549,8 @@ mod tests {
             .await
         });
 
-        let response = send_callback_request("/callback?code=auth-code&state=csrf-token").await;
+        let response =
+            send_callback_request(addr, "/callback?code=auth-code&state=csrf-token").await;
         let result: Result<String> = flow.await.unwrap();
         let error = result.unwrap_err();
 
@@ -542,24 +560,15 @@ mod tests {
         assert!(error.to_string().contains("exchange failed"));
     }
 
-    async fn send_callback_request(path: &str) -> String {
-        for _ in 0..50 {
-            match tokio::net::TcpStream::connect(OAUTH_CALLBACK_ADDR).await {
-                Ok(mut stream) => {
-                    let request = format!(
-                        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-                    );
-                    stream.write_all(request.as_bytes()).await.unwrap();
-                    let _ = stream.shutdown().await;
+    async fn send_callback_request(addr: std::net::SocketAddr, path: &str) -> String {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let _ = stream.shutdown().await;
 
-                    let mut response = String::new();
-                    stream.read_to_string(&mut response).await.unwrap();
-                    return response;
-                }
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
-            }
-        }
-
-        panic!("callback listener did not start in time");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response
     }
 }
