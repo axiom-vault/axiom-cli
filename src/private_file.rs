@@ -60,7 +60,13 @@ pub(crate) async fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> 
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
     };
-    let sync_error = || format!("Failed to sync directory {}", dir.display());
+    let sync_error = || {
+        format!(
+            "{} was written, but directory {} could not be synced, so the file may not survive a crash",
+            path.display(),
+            dir.display()
+        )
+    };
     tokio::fs::File::open(dir)
         .await
         .with_context(sync_error)?

@@ -73,8 +73,9 @@ pub(crate) async fn cmd_create(
             .await
             .with_context(|| {
                 format!(
-                    "The vault was created, but its recovery key was not saved. \
+                    "The vault was created, but saving its recovery key to {} did not complete. \
                      Show it with `axiom recovery show-key --path {}`",
+                    out.display(),
                     path.display()
                 )
             })?;

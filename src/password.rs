@@ -156,9 +156,7 @@ pub(crate) async fn write_recovery_words(path: &Path, words: &str) -> Result<()>
     let mut line = Zeroizing::new(String::with_capacity(words.len() + 1));
     line.push_str(words);
     line.push('\n');
-    crate::private_file::write_private_file(path, line.as_bytes())
-        .await
-        .with_context(|| format!("Failed to write --recovery-out {}", path.display()))
+    crate::private_file::write_private_file(path, line.as_bytes()).await
 }
 
 /// Display recovery words and prompt user to confirm they've saved them.
