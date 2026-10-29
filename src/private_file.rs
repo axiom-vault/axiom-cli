@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 /// Publish `bytes` at `path` atomically: write a private temporary file beside
-/// it, sync it, check that it is owner-only, then rename it into place. An
-/// existing file at `path` is replaced. On failure neither the temporary file
-/// nor a partial `path` is left behind.
+/// it, sync it, check that it is owner-only, rename it into place, then sync
+/// the directory. An existing file at `path` is replaced. On failure neither
+/// the temporary file nor a partial `path` is left behind.
 #[cfg(unix)]
 pub(crate) async fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -52,7 +52,20 @@ pub(crate) async fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> 
     if published.is_err() {
         let _ = tokio::fs::remove_file(&tmp_path).await;
     }
-    published
+    published?;
+
+    // Make the rename itself durable.
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let sync_error = || format!("Failed to sync directory {}", dir.display());
+    tokio::fs::File::open(dir)
+        .await
+        .with_context(sync_error)?
+        .sync_all()
+        .await
+        .with_context(sync_error)
 }
 
 /// Owner-only permissions cannot be set and checked here, so refuse to write.
