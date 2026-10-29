@@ -84,18 +84,25 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                     name,
                     folder_id,
                     tokens,
+                    client_id,
                     strength,
                 } => {
                     commands::gdrive::cmd_gdrive_create(
                         &name,
                         &folder_id,
                         tokens.as_deref(),
+                        client_id,
                         strength,
                     )
                     .await
                 }
-                GdriveCommands::Open { folder_id, tokens } => {
-                    commands::gdrive::cmd_gdrive_open(&folder_id, tokens.as_deref()).await
+                GdriveCommands::Open {
+                    folder_id,
+                    tokens,
+                    client_id,
+                } => {
+                    commands::gdrive::cmd_gdrive_open(&folder_id, tokens.as_deref(), client_id)
+                        .await
                 }
             },
             RemoteCommands::Dropbox { command } => match command {

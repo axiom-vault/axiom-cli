@@ -154,6 +154,8 @@ axiom remote gdrive create --name CloudVault --folder-id YOUR_FOLDER_ID --tokens
 axiom remote gdrive open --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
 ```
 
+`remote gdrive auth` saves the client ID, and the client secret if one was given, in the token file next to the tokens, so `create` and `open` can refresh the access token after it expires. Google does not treat installed-app client secrets as confidential; the file is written with `0600` permissions. A token file from 2.0.0-rc.3 has no client ID: `create` and `open` then take it from `--client-id` or `AXIOM_GOOGLE_CLIENT_ID` (legacy: `AXIOMVAULT_GOOGLE_CLIENT_ID`), and the secret from `AXIOM_GOOGLE_CLIENT_SECRET`; re-running `remote gdrive auth` stores both.
+
 ### Dropbox
 
 ```bash

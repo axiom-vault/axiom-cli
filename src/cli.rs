@@ -357,6 +357,9 @@ pub(crate) enum GdriveCommands {
         /// Path to tokens file (default: `<config dir>/axiomvault/gdrive-tokens.json`).
         #[arg(short, long)]
         tokens: Option<PathBuf>,
+        /// Client ID for refreshing tokens from a token file that does not hold one.
+        #[arg(long)]
+        client_id: Option<String>,
         /// KDF strength level.
         #[arg(short, long, value_enum, default_value_t = KdfStrength::Moderate)]
         strength: KdfStrength,
@@ -369,6 +372,9 @@ pub(crate) enum GdriveCommands {
         /// Path to tokens file (default: `<config dir>/axiomvault/gdrive-tokens.json`).
         #[arg(short, long)]
         tokens: Option<PathBuf>,
+        /// Client ID for refreshing tokens from a token file that does not hold one.
+        #[arg(long)]
+        client_id: Option<String>,
     },
 }
 
