@@ -6,8 +6,8 @@ use crate::commands::remote_oauth::{
 };
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
-    display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
-    vault_password,
+    display_recovery_words, kdf_params_from, may_print_recovery_words, prompt_password,
+    validate_password_strength, vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -23,6 +23,7 @@ use axiomvault_vault::{
     check_migration_needed, check_vault_health, check_vault_structure, MigrationRegistry,
     MigrationStatus, VaultConfig, VaultManager, VaultOperations, VaultVersion,
 };
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -163,6 +164,9 @@ pub(crate) async fn cmd_gdrive_create(
 ) -> Result<()> {
     let tokens_path = tokens_path_or_default(tokens_path)?;
     info!("Creating new vault on Google Drive: {}", name);
+
+    // Know the recovery key can be shown before asking for a password.
+    may_print_recovery_words(std::io::stdout().is_terminal())?;
 
     let kdf_params = kdf_params_from(strength);
 
