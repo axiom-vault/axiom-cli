@@ -3,6 +3,7 @@ use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -26,10 +27,15 @@ use tracing::info;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
+/// Text shown once at startup; stderr only, never routed through tracing or files.
+fn credential_notice(username: &str, password: &str) -> String {
+    format!("WebDAV username: {username}\nWebDAV password (shown once, not stored): {password}")
+}
+
 pub(crate) async fn cmd_webdav(path: &Path, port: u16) -> Result<()> {
     info!("Starting WebDAV server for vault at: {}", path.display());
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let vault_path = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -54,10 +60,28 @@ pub(crate) async fn cmd_webdav(path: &Path, port: u16) -> Result<()> {
     let url = server.url();
 
     println!("WebDAV server running at {}/", url);
+    let credential = server.credential();
+    eprintln!(
+        "{}",
+        credential_notice(credential.username(), credential.password())
+    );
     println!("Press Ctrl+C to stop.");
 
     server
         .start()
         .await
         .map_err(|e| anyhow::anyhow!("WebDAV server error: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::credential_notice;
+
+    #[test]
+    fn notice_contains_password_once_and_username() {
+        let notice = credential_notice("axiomvault", "s3cr3t-pw");
+        assert_eq!(notice.matches("s3cr3t-pw").count(), 1);
+        assert!(notice.contains("WebDAV password (shown once, not stored): s3cr3t-pw"));
+        assert!(notice.contains("axiomvault"));
+    }
 }

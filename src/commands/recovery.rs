@@ -2,7 +2,8 @@
 use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
-    display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    display_recovery_words, kdf_params_from, may_print_recovery_words, prompt_password,
+    validate_password_strength, vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -14,10 +15,8 @@ use axiomvault_storage::{
     RaidRebuilder, RebuildConfig, RebuildResult,
 };
 use axiomvault_sync::{ConflictStrategy, SyncConfig, SyncEngine, SyncMode, SyncState};
-use axiomvault_vault::{
-    check_migration_needed, check_vault_health, check_vault_structure, MigrationRegistry,
-    MigrationStatus, VaultConfig, VaultManager, VaultOperations, VaultVersion,
-};
+use axiomvault_vault::{check_vault_health, check_vault_structure, VaultManager, VaultOperations};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,7 +28,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub(crate) async fn cmd_change_password(path: &Path) -> Result<()> {
     info!("Changing vault password");
 
-    let old_password = prompt_password("Enter current password: ")?;
+    let old_password = vault_password("Enter current password: ")?;
     let new_password = prompt_password("Enter new password: ")?;
     let confirm = prompt_password("Confirm new password: ")?;
 
@@ -56,7 +55,7 @@ pub(crate) async fn cmd_change_password(path: &Path) -> Result<()> {
         .context("Failed to change password")?;
 
     // Save updated config
-    manager.save_config(&session).await?;
+    manager.save_config(&mut session).await?;
 
     println!("Password changed successfully!");
 
@@ -67,7 +66,9 @@ pub(crate) async fn cmd_change_password(path: &Path) -> Result<()> {
 pub(crate) async fn cmd_show_recovery_key(path: &Path) -> Result<()> {
     info!("Showing recovery key");
 
-    let password = prompt_password("Enter password: ")?;
+    may_print_recovery_words(std::io::stdout().is_terminal())?;
+
+    let password = vault_password("Enter password: ")?;
     let path_str = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -99,11 +100,11 @@ pub(crate) async fn cmd_show_recovery_key(path: &Path) -> Result<()> {
 pub(crate) async fn cmd_reset_password(path: &Path) -> Result<()> {
     info!("Resetting vault password using recovery key");
 
-    println!("Enter your 24-word recovery key (space-separated):");
-    let mut recovery_input = String::new();
-    std::io::stdin()
-        .read_line(&mut recovery_input)
-        .context("Failed to read recovery key")?;
+    // Read without echo; Zeroizing wipes the words when they go out of scope.
+    let recovery_input = Zeroizing::new(
+        rpassword::prompt_password("Enter your 24-word recovery key (space-separated): ")
+            .context("Failed to read recovery key")?,
+    );
     let recovery_words = recovery_input.trim();
 
     // Validate the recovery key format first.
@@ -131,48 +132,7 @@ pub(crate) async fn cmd_reset_password(path: &Path) -> Result<()> {
         .await
         .context("Failed to reset password. Recovery key may be incorrect.")?;
 
-    recovery_input.zeroize();
-
     println!("Password reset successfully!");
-
-    Ok(())
-}
-
-/// Migrate a legacy vault to support recovery keys.
-pub(crate) async fn cmd_migrate_vault(path: &Path) -> Result<()> {
-    info!("Migrating vault to v1.1 format");
-
-    let password = prompt_password("Enter password: ")?;
-    let path_str = path.to_string_lossy().to_string();
-
-    let manager = VaultManager::new();
-    let provider_config = serde_json::json!({
-        "root": path_str
-    });
-
-    let mut session = manager
-        .open_vault("local", provider_config, &password)
-        .await
-        .context("Failed to open vault")?;
-
-    if !session.config().is_legacy_format() {
-        println!("Vault is already in v1.1 format with recovery key support.");
-        return Ok(());
-    }
-
-    let recovery_words = session
-        .config_mut()
-        .migrate_to_v1_1(&password)
-        .context("Failed to migrate vault")?;
-
-    // Save updated config.
-    manager
-        .save_config(&session)
-        .await
-        .context("Failed to save migrated config")?;
-
-    println!("Vault migrated successfully to v1.1 format!");
-    display_recovery_words(&recovery_words);
 
     Ok(())
 }

@@ -10,8 +10,8 @@ use axiomvault_crypto::recovery::RecoveryKey;
 use axiomvault_crypto::KdfParams;
 use axiomvault_storage::gdrive::{AuthConfig, AuthManager, GDriveConfig, Tokens};
 use axiomvault_storage::{
-    create_default_registry, CompositeConfig, CompositeStorageProvider, HealthStatus, RaidMode,
-    RaidRebuilder, RebuildConfig, RebuildResult,
+    create_default_registry, CompositeConfig, CompositeKey, CompositeStorageProvider, HealthStatus,
+    RaidMode, RaidRebuilder, RebuildConfig, RebuildResult,
 };
 use axiomvault_sync::{ConflictStrategy, SyncConfig, SyncEngine, SyncMode, SyncState};
 use axiomvault_vault::{
@@ -31,6 +31,82 @@ use zeroize::{Zeroize, Zeroizing};
 struct RaidConfig {
     mode: RaidModeConfig,
     backends: Vec<BackendEntry>,
+    /// Secret key that authenticates the shard map and every shard (M-16).
+    /// Generated when the set is created; it stays in this local file and is
+    /// never written to a backend. `None` only for a config that predates it.
+    #[serde(default)]
+    composite_key: Option<StoredKey>,
+}
+
+impl RaidConfig {
+    /// The set's composite key.
+    fn key(&self) -> Result<CompositeKey> {
+        self.composite_key
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "it has no composite key, so it was written before the shard map was \
+                     authenticated and cannot be used. Recreate the RAID set: move raid.json \
+                     aside and run 'axiom raid add-backend' again for each backend, using \
+                     empty backend locations."
+                )
+            })?
+            .to_key()
+    }
+}
+
+/// A composite key stored as 64 hex digits. `Debug` never shows it and the
+/// string is wiped on drop.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct StoredKey(String);
+
+impl StoredKey {
+    /// 32 fresh bytes from the OS random number generator.
+    fn generate() -> Result<Self> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        getrandom::fill(bytes.as_mut_slice())
+            .map_err(|e| anyhow::anyhow!("OS random number generator failed: {e}"))?;
+        // Sized up front so the string never reallocates and leaves a copy behind.
+        let mut hex = String::with_capacity(64);
+        for byte in bytes.iter() {
+            hex.push(HEX[usize::from(byte >> 4)] as char);
+            hex.push(HEX[usize::from(byte & 0x0f)] as char);
+        }
+        Ok(Self(hex))
+    }
+
+    /// Decode the key. Errors never include the stored digits.
+    fn to_key(&self) -> Result<CompositeKey> {
+        let digits = self.0.as_bytes();
+        if digits.len() != 64 {
+            anyhow::bail!("its composite key is not 64 hex digits");
+        }
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        for (byte, pair) in bytes.iter_mut().zip(digits.as_chunks::<2>().0) {
+            let (Some(hi), Some(lo)) = (
+                char::from(pair[0]).to_digit(16),
+                char::from(pair[1]).to_digit(16),
+            ) else {
+                anyhow::bail!("its composite key contains a non-hex digit");
+            };
+            *byte = ((hi << 4) | lo) as u8;
+        }
+        Ok(CompositeKey::from_bytes(*bytes))
+    }
+}
+
+impl std::fmt::Debug for StoredKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StoredKey([REDACTED])")
+    }
+}
+
+impl Drop for StoredKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 /// Serialised RAID mode.
@@ -69,24 +145,54 @@ async fn load_raid_config(vault_path: &Path) -> Result<Option<RaidConfig>> {
     let data = tokio::fs::read_to_string(&path)
         .await
         .context("Failed to read RAID config")?;
+    let data = Zeroizing::new(data);
     let cfg: RaidConfig = serde_json::from_str(&data).context("Failed to parse RAID config")?;
+    // Refuse a config without a usable key here, so every raid command does.
+    cfg.key()
+        .with_context(|| format!("Cannot use RAID config {}", path.display()))?;
     Ok(Some(cfg))
 }
 
-/// Save the RAID configuration atomically (write-then-rename).
+/// Save the RAID configuration atomically (write-then-rename). The file holds
+/// the composite key, so on Unix it is created with mode 0600.
 async fn save_raid_config(vault_path: &Path, config: &RaidConfig) -> Result<()> {
     let dir = vault_path.join(".axiomvault");
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .context("Failed to create .axiomvault directory")?;
-
     let tmp_path = dir.join("raid.json.tmp");
     let final_path = dir.join("raid.json");
 
-    let json = serde_json::to_string_pretty(config).context("Failed to serialize RAID config")?;
-    tokio::fs::write(&tmp_path, &json)
+    let json = Zeroizing::new(
+        serde_json::to_string_pretty(config).context("Failed to serialize RAID config")?,
+    );
+
+    // Remove a stale tmp file so the new one is created fresh with 0o600.
+    // The mode flag in OpenOptions only applies on creation.
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut dir_builder = tokio::fs::DirBuilder::new();
+    dir_builder.recursive(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+        dir_builder.mode(0o700);
+    }
+    dir_builder
+        .create(&dir)
+        .await
+        .context("Failed to create .axiomvault directory")?;
+
+    let mut file = options
+        .open(&tmp_path)
+        .await
+        .context("Failed to create RAID config tmp")?;
+    file.write_all(json.as_bytes())
         .await
         .context("Failed to write RAID config tmp")?;
+    file.flush()
+        .await
+        .context("Failed to write RAID config tmp")?;
+    drop(file);
     tokio::fs::rename(&tmp_path, &final_path)
         .await
         .context("Failed to rename RAID config")?;
@@ -131,7 +237,7 @@ fn build_composite(config: &RaidConfig) -> Result<CompositeStorageProvider> {
         health: Default::default(),
     };
 
-    let composite = CompositeStorageProvider::new(backends, composite_config)
+    let composite = CompositeStorageProvider::new(backends, composite_config, config.key()?)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     Ok(composite)
 }
@@ -161,16 +267,21 @@ pub(crate) async fn cmd_raid_add_backend(
         config: provider_config,
     };
 
-    let mut raid_cfg = load_raid_config(vault_path)
-        .await?
-        .unwrap_or_else(|| RaidConfig {
+    // The first backend creates the RAID set, and with it the set's key.
+    let existing = load_raid_config(vault_path).await?;
+    let created = existing.is_none();
+    let mut raid_cfg = match existing {
+        Some(cfg) => cfg,
+        None => RaidConfig {
             mode: RaidModeConfig {
                 mode_type: "mirror".to_string(),
                 data_shards: None,
                 parity_shards: None,
             },
             backends: Vec::new(),
-        });
+            composite_key: Some(StoredKey::generate()?),
+        },
+    };
 
     raid_cfg.backends.push(entry);
 
@@ -195,6 +306,14 @@ pub(crate) async fn cmd_raid_add_backend(
     }
 
     save_raid_config(vault_path, &raid_cfg).await?;
+
+    if created {
+        eprintln!(
+            "Warning: created a new RAID set. Its composite key is stored only in {}. \
+             Back up that file and keep it private: if it is lost, the RAID set cannot be read.",
+            raid_config_path(vault_path).display()
+        );
+    }
 
     println!("Backend added successfully!");
     println!("  Index: {}", raid_cfg.backends.len() - 1);
@@ -691,15 +810,19 @@ pub(crate) async fn cmd_raid_configure(
 
 #[cfg(test)]
 mod tests {
-    use super::{print_progress_bar, rebuild_with_progress};
+    use super::{
+        build_composite, cmd_raid_add_backend, load_raid_config, print_progress_bar,
+        raid_config_path, rebuild_with_progress,
+    };
 
     use axiomvault_storage::{
         rebuild::{RebuildConfig, RebuildProgress},
-        CompositeConfig, CompositeStorageProvider, MemoryProvider, RaidMode, RaidRebuilder,
-        StorageProvider,
+        CompositeConfig, CompositeKey, CompositeStorageProvider, MemoryProvider, RaidMode,
+        RaidRebuilder, StorageProvider,
     };
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
-    use std::time::Instant;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -713,7 +836,8 @@ mod tests {
             mode: RaidMode::Mirror,
             health: Default::default(),
         };
-        CompositeStorageProvider::new(backends, config).expect("mirror composite")
+        CompositeStorageProvider::new(backends, config, CompositeKey::from_bytes([0x42; 32]))
+            .expect("mirror composite")
     }
 
     fn progress_with(
@@ -950,5 +1074,141 @@ mod tests {
 
         let result = rebuild_with_progress(&rebuilder).await;
         assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
+    }
+
+    // -----------------------------------------------------------------------
+    // RAID config – per-set composite key
+    // -----------------------------------------------------------------------
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(prefix: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "axiom-cli-raid-{prefix}-{}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn local_backend_config(root: &Path, index: usize) -> String {
+        let backend = root.join(format!("backend-{index}"));
+        std::fs::create_dir_all(&backend).unwrap();
+        serde_json::json!({ "root": backend }).to_string()
+    }
+
+    /// Create a RAID set at `root/vault` from `n` local backends.
+    async fn create_local_set(root: &Path, n: usize) -> PathBuf {
+        let vault = root.join("vault");
+        for i in 0..n {
+            cmd_raid_add_backend(&vault, "local", &local_backend_config(root, i))
+                .await
+                .expect("add backend");
+        }
+        vault
+    }
+
+    fn stored_key_hex(vault: &Path) -> Option<String> {
+        let data = std::fs::read_to_string(raid_config_path(vault)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&data).unwrap();
+        json["composite_key"].as_str().map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn test_create_writes_private_config_with_32_byte_key() {
+        let dir = TempDir::new("create");
+        let vault = create_local_set(dir.path(), 1).await;
+
+        let hex = stored_key_hex(&vault).expect("composite_key");
+        assert_eq!(hex.len(), 64, "32 bytes as hex");
+        assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        let cfg = load_raid_config(&vault).await.unwrap().expect("config");
+        cfg.key().expect("key decodes");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(raid_config_path(&vault))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_config_without_key_is_refused() {
+        let dir = TempDir::new("nokey");
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join(".axiomvault")).unwrap();
+        let legacy = r#"{"mode":{"type":"mirror"},"backends":[]}"#;
+        std::fs::write(raid_config_path(&vault), legacy).unwrap();
+
+        let msg = format!("{:#}", load_raid_config(&vault).await.unwrap_err());
+        assert!(msg.contains("no composite key"), "{msg}");
+        assert!(msg.contains("Recreate the RAID set"), "{msg}");
+
+        // Adding a backend must not quietly give the old set a new key.
+        let err = cmd_raid_add_backend(&vault, "local", &local_backend_config(dir.path(), 0))
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("no composite key"));
+        assert_eq!(
+            std::fs::read_to_string(raid_config_path(&vault)).unwrap(),
+            legacy
+        );
+    }
+
+    #[tokio::test]
+    async fn test_two_creates_use_different_keys() {
+        let (a, b) = (TempDir::new("key-a"), TempDir::new("key-b"));
+        let key_a = stored_key_hex(&create_local_set(a.path(), 1).await);
+        let key_b = stored_key_hex(&create_local_set(b.path(), 1).await);
+        assert!(key_a.is_some());
+        assert_ne!(key_a, key_b);
+    }
+
+    #[tokio::test]
+    async fn test_composite_from_config_reads_back_what_it_wrote() {
+        let dir = TempDir::new("readback");
+        let vault = create_local_set(dir.path(), 2).await;
+        let path = axiomvault_common::VaultPath::parse("/data.enc").unwrap();
+
+        let cfg = load_raid_config(&vault).await.unwrap().expect("config");
+        build_composite(&cfg)
+            .unwrap()
+            .upload(&path, b"raid payload".to_vec())
+            .await
+            .expect("upload");
+
+        // A fresh composite from the reloaded config verifies the set's tags.
+        let cfg = load_raid_config(&vault).await.unwrap().expect("config");
+        let reader = build_composite(&cfg).unwrap();
+        assert_eq!(reader.download(&path).await.unwrap(), b"raid payload");
+
+        // Under another key the same backends do not verify.
+        let mut other = cfg.clone();
+        other.composite_key = Some(super::StoredKey::generate().unwrap());
+        assert!(build_composite(&other)
+            .unwrap()
+            .download(&path)
+            .await
+            .is_err());
     }
 }
