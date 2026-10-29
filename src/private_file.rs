@@ -5,9 +5,11 @@ use std::path::Path;
 
 /// Publish `bytes` at `path` atomically: write a private temporary file beside
 /// it, sync it, check that it is owner-only, rename it into place, then sync
-/// the directory. An existing file at `path` is replaced. On failure neither
-/// the temporary file nor a partial `path` is left behind. The temporary file
-/// has a random name, so no existing file beside `path` is touched.
+/// the directory; a failed directory sync is only a warning, because the file
+/// is already in place. An existing file at `path` is replaced. On failure
+/// neither the temporary file nor a partial `path` is left behind. The
+/// temporary file has a random name, so no existing file beside `path` is
+/// touched.
 #[cfg(unix)]
 pub(crate) async fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -55,24 +57,21 @@ pub(crate) async fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> 
     }
     published?;
 
-    // Make the rename itself durable.
+    // Make the rename itself durable. The file is already published, so a
+    // failure here is only reported.
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
     };
-    let sync_error = || {
-        format!(
-            "{} was written, but directory {} could not be synced, so the file may not survive a crash",
+    let synced = async { tokio::fs::File::open(dir).await?.sync_all().await }.await;
+    if let Err(error) = synced {
+        eprintln!(
+            "Warning: {} was written, but directory {} could not be synced ({error}), so the file may not survive a crash",
             path.display(),
             dir.display()
-        )
-    };
-    tokio::fs::File::open(dir)
-        .await
-        .with_context(sync_error)?
-        .sync_all()
-        .await
-        .with_context(sync_error)
+        );
+    }
+    Ok(())
 }
 
 /// Owner-only permissions cannot be set and checked here, so refuse to write.
