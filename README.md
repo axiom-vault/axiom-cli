@@ -227,8 +227,8 @@ To keep it running, start it with `&`, in a terminal multiplexer such as tmux, o
 
 ```text
 --strength interactive # ~0.5s, mobile-friendly (64 MiB, 3 iterations)
---strength moderate # ~1s, balanced (default, 32 MiB, 3 iterations)
---strength sensitive # ~3s, high security (256 MiB, 4 iterations)
+--strength moderate    # ~1s, balanced (default, 32 MiB, 3 iterations)
+--strength sensitive   # ~3s, high security (256 MiB, 4 iterations)
 ```
 
 ## Development
@@ -252,4 +252,4 @@ All PRs must pass CI checks (formatting, clippy, tests) before merging.
 
 ## License
 
-[Apache 2.0](LICENSE).
+[Apache 2.0](LICENSE)
