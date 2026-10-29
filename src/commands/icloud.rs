@@ -9,11 +9,34 @@ use axiomvault_vault::{VaultCreation, VaultManager, VaultSession};
 use std::path::Path;
 use tracing::info;
 
-fn build_icloud_config(root_path: Option<&Path>, subfolder: Option<&str>) -> ICloudConfig {
-    ICloudConfig {
-        root_path: root_path.map(|path| path.to_string_lossy().into_owned()),
-        subfolder: normalize_subfolder(subfolder),
+fn build_icloud_config(root_path: Option<&Path>, subfolder: Option<&str>) -> Result<ICloudConfig> {
+    let subfolder = normalize_subfolder(subfolder);
+    if let Some(subfolder) = subfolder.as_deref() {
+        validate_subfolder(subfolder)?;
     }
+    Ok(ICloudConfig {
+        root_path: root_path.map(|path| path.to_string_lossy().into_owned()),
+        subfolder,
+    })
+}
+
+/// The pinned axiom-core joins the subfolder onto the iCloud root unchecked,
+/// so an absolute path, a drive prefix or `..` would escape it.
+fn validate_subfolder(subfolder: &str) -> Result<()> {
+    let bytes = subfolder.as_bytes();
+    let drive_prefix = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if Path::new(subfolder).has_root() || drive_prefix {
+        anyhow::bail!("iCloud subfolder must be a relative path");
+    }
+    for component in subfolder.split(['/', '\\']) {
+        if component.trim().is_empty() {
+            anyhow::bail!("iCloud subfolder components cannot be empty or whitespace");
+        }
+        if component == "." || component == ".." {
+            anyhow::bail!("iCloud subfolder cannot contain '.' or '..' path components");
+        }
+    }
+    Ok(())
 }
 
 fn normalize_subfolder(subfolder: Option<&str>) -> Option<String> {
@@ -27,7 +50,7 @@ fn serialize_icloud_config(
     root_path: Option<&Path>,
     subfolder: Option<&str>,
 ) -> Result<serde_json::Value> {
-    serde_json::to_value(build_icloud_config(root_path, subfolder))
+    serde_json::to_value(build_icloud_config(root_path, subfolder)?)
         .context("Failed to serialize iCloud config")
 }
 
@@ -160,9 +183,20 @@ mod tests {
 
     #[test]
     fn build_icloud_config_trims_empty_subfolder() {
-        let config = build_icloud_config(Some(Path::new("/tmp/icloud")), Some(" "));
+        let config = build_icloud_config(Some(Path::new("/tmp/icloud")), Some(" ")).unwrap();
         assert_eq!(config.root_path.as_deref(), Some("/tmp/icloud"));
         assert_eq!(config.subfolder, None);
+    }
+
+    #[test]
+    fn validate_subfolder_rejects_escapes() {
+        for subfolder in ["C:escape", "a//b", "a/ /b", "./a", "a\\..\\b"] {
+            assert!(
+                validate_subfolder(subfolder).is_err(),
+                "{subfolder:?} should be rejected"
+            );
+        }
+        validate_subfolder("AxiomVault/work").unwrap();
     }
 
     #[tokio::test]
@@ -180,7 +214,6 @@ mod tests {
             "absolute subfolder should fail",
         );
 
-        assert_error_contains(&error, "Failed to create vault on iCloud");
         assert_error_contains(&error, "relative path");
         assert!(!root.join("escape").exists());
     }
@@ -200,7 +233,6 @@ mod tests {
             "parent traversal subfolder should fail",
         );
 
-        assert_error_contains(&error, "Failed to open vault on iCloud");
         assert_error_contains(&error, "'.' or '..'");
         cleanup_temp_root(&root).await;
     }
