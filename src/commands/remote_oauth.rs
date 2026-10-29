@@ -282,18 +282,8 @@ fn parse_callback(
         }
     }
 
-    if let Some(error_code) = provider_error {
-        let detail = provider_error_description
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "No additional details were provided by the OAuth provider.".into());
-        return Err(CallbackFailure::bad_request(
-            format!(
-                "{provider_name} returned an authorization error. You can close this window and return to the terminal."
-            ),
-            anyhow!("{provider_name} authorization failed: {error_code} ({detail})"),
-        ));
-    }
-
+    // Check state first: without it, any local request could end the flow
+    // and put text of its choosing into the terminal.
     let received_state = state.ok_or_else(|| {
         CallbackFailure::bad_request(
             "The OAuth callback did not include a state parameter. Please close this window and try again.",
@@ -305,6 +295,18 @@ fn parse_callback(
         return Err(CallbackFailure::bad_request(
             "Security validation failed. Please close this window and try again.",
             anyhow!("CSRF token mismatch - possible security issue"),
+        ));
+    }
+
+    if let Some(error_code) = provider_error {
+        let detail = provider_error_description
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "No additional details were provided by the OAuth provider.".into());
+        return Err(CallbackFailure::bad_request(
+            format!(
+                "{provider_name} returned an authorization error. You can close this window and return to the terminal."
+            ),
+            anyhow!("{provider_name} authorization failed: {error_code} ({detail})"),
         ));
     }
 
@@ -412,6 +414,25 @@ mod tests {
             .error
             .to_string()
             .contains("Dropbox authorization failed: access_denied (user denied)"));
+    }
+
+    #[test]
+    fn parse_callback_checks_state_before_provider_error() {
+        let error = parse_callback(
+            "/callback?error=access_denied&error_description=forged",
+            "csrf",
+            "Dropbox",
+        )
+        .unwrap_err();
+        assert!(error.error.to_string().contains("No state parameter"));
+
+        let error = parse_callback(
+            "/callback?error=access_denied&error_description=forged&state=wrong",
+            "csrf",
+            "Dropbox",
+        )
+        .unwrap_err();
+        assert!(error.error.to_string().contains("CSRF token mismatch"));
     }
 
     #[test]
