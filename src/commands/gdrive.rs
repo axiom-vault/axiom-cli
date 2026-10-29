@@ -81,10 +81,21 @@ const MAX_TOKENS_FILE_BYTES: u64 = 64 * 1024;
 async fn read_tokens(path: &Path) -> Result<Tokens> {
     let read_error = || format!("Failed to read tokens file {}", path.display());
     let mut json = String::new();
-    tokio::fs::File::open(path)
-        .await
-        .with_context(read_error)?
-        .take(MAX_TOKENS_FILE_BYTES + 1)
+    let file = match tokio::fs::File::open(path).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let auth = if tokens_path_or_default(None).ok().as_deref() == Some(path) {
+                "axiom remote gdrive auth".to_string()
+            } else {
+                format!("axiom remote gdrive auth --output {}", path.display())
+            };
+            anyhow::bail!(
+                "Tokens file {} not found; run `{auth}` to create it",
+                path.display()
+            );
+        }
+        file => file.with_context(read_error)?,
+    };
+    file.take(MAX_TOKENS_FILE_BYTES + 1)
         .read_to_string(&mut json)
         .await
         .with_context(read_error)?;
@@ -500,6 +511,30 @@ mod tests {
 
         let err = read_tokens(&path).await.unwrap_err().to_string();
         assert!(err.contains("larger than 64 KiB"), "{err}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_tokens_hints_at_auth_when_the_file_is_missing() {
+        let dir = token_test_dir("missing");
+        let path = dir.join("tokens.json");
+
+        let err = read_tokens(&path).await.unwrap_err().to_string();
+        assert!(
+            err.contains(&format!(
+                "run `axiom remote gdrive auth --output {}`",
+                path.display()
+            )),
+            "{err}"
+        );
+
+        if let Ok(default) = tokens_path_or_default(None) {
+            if !default.exists() {
+                let err = read_tokens(&default).await.unwrap_err().to_string();
+                assert!(err.contains("run `axiom remote gdrive auth` to"), "{err}");
+            }
+        }
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
