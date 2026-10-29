@@ -2,9 +2,9 @@ name: Rust CI
 
 on:
   push:
-    branches: [ main, master, develop, 'copilot/**' ]
+    branches: [ main, master, develop, 'release/**', 'copilot/**' ]
   pull_request:
-    branches: [ main, master, develop ]
+    branches: [ main, master, develop, 'release/**' ]
   workflow_dispatch:
 
 permissions:
@@ -66,7 +66,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        rust: [stable, 1.85.0]  # MSRV - requires 2024 edition support
+        rust: [stable, 1.89.0]  # MSRV - oldest rustc that builds the locked dependencies (axiom-core uses File::lock, stable in 1.89)
     steps:
       - uses: actions/checkout@v6
 
