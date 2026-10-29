@@ -76,3 +76,73 @@ pub(crate) async fn write_private_file(path: &Path, _bytes: &[u8]) -> Result<()>
         path.display()
     )
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    fn test_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("axiom-private-file-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn replaces_the_target_privately_and_clears_a_stale_temp_file() {
+        let dir = test_dir("replace");
+        let target = dir.join("secret");
+        std::fs::write(&target, b"old").unwrap();
+        // Left behind by an interrupted earlier write.
+        std::fs::write(dir.join("secret.tmp"), b"partial").unwrap();
+
+        write_private_file(&target, b"new").await.unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(entries(&dir), ["secret"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_rename_leaves_no_temp_file() {
+        let dir = test_dir("rename");
+        // A non-empty directory at the target makes the final rename fail
+        // after the temporary file has been written and synced.
+        let target = dir.join("secret");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep"), b"keep").unwrap();
+
+        let err = write_private_file(&target, b"new").await.unwrap_err();
+
+        assert!(format!("{err:#}").contains("rename"), "{err:#}");
+        assert_eq!(std::fs::read(target.join("keep")).unwrap(), b"keep");
+        assert_eq!(entries(&dir), ["secret"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_create_leaves_nothing_behind() {
+        let dir = test_dir("create");
+        let target = dir.join("missing").join("secret");
+
+        let err = write_private_file(&target, b"new").await.unwrap_err();
+
+        assert!(format!("{err:#}").contains("Failed to create"), "{err:#}");
+        assert!(entries(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
