@@ -1,11 +1,13 @@
 use crate::cli::KdfStrength;
 use crate::password::{
-    display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    display_recovery_words, kdf_params_from, may_print_recovery_words, prompt_password,
+    validate_password_strength, vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::VaultId;
 use axiomvault_storage::icloud::ICloudConfig;
 use axiomvault_vault::{VaultCreation, VaultManager, VaultSession};
+use std::io::IsTerminal;
 use std::path::Path;
 use tracing::info;
 
@@ -61,7 +63,7 @@ async fn create_icloud_vault(
     password: &[u8],
     strength: KdfStrength,
 ) -> Result<VaultCreation> {
-    let vault_id = VaultId::new(name).context("Invalid vault name")?;
+    let vault_id = VaultId::unique(name).context("Invalid vault name")?;
     let provider_config = serialize_icloud_config(root_path, subfolder)?;
 
     VaultManager::new()
@@ -96,6 +98,9 @@ pub(crate) async fn cmd_icloud_create(
     strength: KdfStrength,
 ) -> Result<()> {
     info!("Creating new vault on iCloud: {}", name);
+
+    // Know the recovery key can be shown before asking for a password.
+    may_print_recovery_words(std::io::stdout().is_terminal())?;
 
     let password = prompt_password("Enter password: ")?;
     let confirm = prompt_password("Confirm password: ")?;
@@ -136,7 +141,7 @@ pub(crate) async fn cmd_icloud_open(
 ) -> Result<()> {
     info!("Opening vault on iCloud");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let session = open_icloud_vault(root_path, subfolder, &password).await?;
 
     println!("Vault opened successfully from iCloud!");
@@ -260,7 +265,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(session.config().provider_type, "icloud");
-        assert_eq!(session.vault_id().to_string(), "CloudVault");
+        assert_eq!(session.vault_id(), creation.session.vault_id());
+        assert!(session.vault_id().to_string().starts_with("CloudVault-"));
 
         cleanup_temp_root(&root).await;
     }
