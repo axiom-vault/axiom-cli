@@ -81,7 +81,7 @@ axiom mount fuse --path ~/my-vault ~/my-vault-mount
 
 ### Vault ID
 
-`vault create`, `remote gdrive create` and `remote icloud create` give each new vault an ID made of `--name` and a random suffix, for example `MyVault-3f2c9a1e0b7d4c6e8a5f1b2d3c4e5f60`, and print it.
+`vault create`, `remote gdrive create`, `remote dropbox create` and `remote icloud create` give each new vault an ID made of `--name` and a random suffix, for example `MyVault-3f2c9a1e0b7d4c6e8a5f1b2d3c4e5f60`, and print it.
 Two vaults created with the same name therefore never share an ID, and a deleted vault can be recreated under its old name at the same path.
 Existing vaults keep the ID they were created with.
 
@@ -108,7 +108,7 @@ axiom file list --vault-path ~/my-vault --password-file ~/.axiom-pw
 
 - The file must be a regular file with no group or other permissions (`chmod 600`); otherwise it is refused.
 - Its bytes are used as-is, except that exactly one trailing `\n` or `\r\n` is stripped. An empty password is refused.
-- New passwords (`vault create`, `remote gdrive create`, `remote icloud create`, and the new password for `password change` and `password reset`) are always prompted.
+- New passwords (`vault create`, `remote gdrive create`, `remote dropbox create`, `remote icloud create`, and the new password for `password change` and `password reset`) are always prompted.
 - Without a terminal and without `--password-file`, the command fails instead of waiting for input.
 - Unix only; on other platforms `--password-file` is refused.
 
@@ -153,6 +153,16 @@ axiom remote gdrive auth --output ~/gdrive-tokens.json
 axiom remote gdrive create --name CloudVault --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
 axiom remote gdrive open --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json
 ```
+
+### Dropbox
+
+```bash
+axiom remote dropbox auth --output ~/dropbox-tokens.json
+axiom remote dropbox create --name CloudVault --root-path /AxiomVault --tokens ~/dropbox-tokens.json
+axiom remote dropbox open --root-path /AxiomVault --tokens ~/dropbox-tokens.json
+```
+
+`remote dropbox auth` accepts `--app-key` / `--app-secret` or falls back to `AXIOM_DROPBOX_APP_KEY` / `AXIOM_DROPBOX_APP_SECRET`. The legacy `AXIOMVAULT_DROPBOX_APP_KEY` / `AXIOMVAULT_DROPBOX_APP_SECRET` names remain supported. The app key is saved in the token file next to the tokens, so `create` and `open` can refresh the access token after it expires. OAuth token files are only reported as successful after the code exchange and token save complete. On Unix, token files are written atomically with `0600` permissions, and an existing path is replaced only if it already holds Dropbox tokens; on other platforms saving tokens is refused.
 
 ### iCloud Drive
 
@@ -205,9 +215,11 @@ To keep it running, start it with `&`, in a terminal multiplexer such as tmux, o
 | `remote gdrive auth` | Authenticate with Google Drive |
 | `remote gdrive create` | Create vault on Google Drive |
 | `remote gdrive open` | Open vault from Google Drive |
+| `remote dropbox auth` | Authenticate with Dropbox |
+| `remote dropbox create` | Create vault on Dropbox |
+| `remote dropbox open` | Open vault from Dropbox |
 | `remote icloud create` | Create vault on iCloud Drive |
 | `remote icloud open` | Open vault from iCloud Drive |
-| `remote dropbox` | Placeholder for future Dropbox remote support |
 | `sync run` | Synchronize vault with remote |
 | `sync status` | Show sync status |
 | `sync conflicts` | List sync conflicts |

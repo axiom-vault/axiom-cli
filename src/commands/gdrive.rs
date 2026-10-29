@@ -1,9 +1,13 @@
 #![allow(unused_imports)]
 use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
+use crate::commands::remote_oauth::{
+    complete_local_oauth_flow, read_tokens, resolve_optional_oauth_value,
+    resolve_required_oauth_value, save_tokens,
+};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
-    display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
-    vault_password,
+    display_recovery_words, kdf_params_from, may_print_recovery_words, prompt_password,
+    validate_password_strength, vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -19,6 +23,7 @@ use axiomvault_vault::{
     check_migration_needed, check_vault_health, check_vault_structure, MigrationRegistry,
     MigrationStatus, VaultConfig, VaultManager, VaultOperations, VaultVersion,
 };
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,6 +31,31 @@ use tokio::net::TcpListener;
 use tracing::info;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
+
+const GDRIVE_REDIRECT_URL: &str = "http://localhost:8080/callback";
+const AXIOM_GOOGLE_CLIENT_ID_ENV: &str = "AXIOM_GOOGLE_CLIENT_ID";
+const AXIOMVAULT_GOOGLE_CLIENT_ID_ENV: &str = "AXIOMVAULT_GOOGLE_CLIENT_ID";
+const AXIOM_GOOGLE_CLIENT_SECRET_ENV: &str = "AXIOM_GOOGLE_CLIENT_SECRET";
+const AXIOMVAULT_GOOGLE_CLIENT_SECRET_ENV: &str = "AXIOMVAULT_GOOGLE_CLIENT_SECRET";
+
+/// CLI flags take precedence over environment variables.
+fn resolve_gdrive_client_id(client_id: Option<String>) -> Result<String> {
+    resolve_required_oauth_value(
+        client_id,
+        std::env::var(AXIOM_GOOGLE_CLIENT_ID_ENV).ok(),
+        std::env::var(AXIOMVAULT_GOOGLE_CLIENT_ID_ENV).ok(),
+        "Google OAuth2 client ID not provided. Use --client-id or set AXIOM_GOOGLE_CLIENT_ID (legacy: AXIOMVAULT_GOOGLE_CLIENT_ID)",
+    )
+}
+
+/// PKCE makes client_secret optional for public clients.
+fn resolve_gdrive_client_secret(client_secret: Option<String>) -> Option<String> {
+    resolve_optional_oauth_value(
+        client_secret,
+        std::env::var(AXIOM_GOOGLE_CLIENT_SECRET_ENV).ok(),
+        std::env::var(AXIOMVAULT_GOOGLE_CLIENT_SECRET_ENV).ok(),
+    )
+}
 
 /// Opaque, non-secret reference persisted in `vault.config` instead of tokens.
 const GDRIVE_CREDENTIAL_REF: &str = "local:gdrive:cli-tokens";
@@ -74,70 +104,15 @@ fn tokens_path_or_default(path: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
-/// Largest token file read; a real one is well under 4 KiB.
-const MAX_TOKENS_FILE_BYTES: u64 = 64 * 1024;
-
-/// Read and parse a token file, refusing one larger than `MAX_TOKENS_FILE_BYTES`.
-async fn read_tokens(path: &Path) -> Result<Tokens> {
-    let read_error = || format!("Failed to read tokens file {}", path.display());
-    let mut json = String::new();
-    let file = match tokio::fs::File::open(path).await {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let auth = if tokens_path_or_default(None).ok().as_deref() == Some(path) {
-                "axiom remote gdrive auth".to_string()
-            } else {
-                format!("axiom remote gdrive auth --output {}", path.display())
-            };
-            anyhow::bail!(
-                "Tokens file {} not found; run `{auth}` to create it",
-                path.display()
-            );
-        }
-        file => file.with_context(read_error)?,
+/// Read the Google Drive token file; a missing file names the `auth` command
+/// that creates it.
+async fn read_gdrive_tokens(path: &Path) -> Result<Tokens> {
+    let auth = if tokens_path_or_default(None).ok().as_deref() == Some(path) {
+        "axiom remote gdrive auth".to_string()
+    } else {
+        format!("axiom remote gdrive auth --output {}", path.display())
     };
-    file.take(MAX_TOKENS_FILE_BYTES + 1)
-        .read_to_string(&mut json)
-        .await
-        .with_context(read_error)?;
-    if json.len() as u64 > MAX_TOKENS_FILE_BYTES {
-        anyhow::bail!("Tokens file {} is larger than 64 KiB", path.display());
-    }
-    serde_json::from_str(&json).context("Failed to parse tokens file")
-}
-
-/// Publish the token file atomically: write a private temporary file beside it,
-/// sync it, check that it is owner-only, then rename it into place. Only a
-/// regular file that already holds tokens is replaced; any other existing path,
-/// including a symlink, is refused.
-#[cfg(unix)]
-async fn save_tokens(output: &Path, default_dir: Option<&Path>, json: &[u8]) -> Result<()> {
-    if let Ok(existing) = tokio::fs::symlink_metadata(output).await {
-        if !existing.is_file() || read_tokens(output).await.is_err() {
-            anyhow::bail!(
-                "{} already exists and is not a token file; refusing to overwrite it",
-                output.display()
-            );
-        }
-    }
-    if let Some(dir) = default_dir {
-        tokio::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .await
-            .context("Failed to create token directory")?;
-    }
-    crate::private_file::write_private_file(output, json)
-        .await
-        .context("Failed to save tokens file")
-}
-
-/// Owner-only permissions are not verified here, so refuse to write tokens.
-#[cfg(not(unix))]
-async fn save_tokens(_output: &Path, _default_dir: Option<&Path>, _json: &[u8]) -> Result<()> {
-    anyhow::bail!(
-        "Saving OAuth tokens is supported only on Unix, where owner-only permissions can be checked"
-    )
+    read_tokens(path, &auth).await
 }
 
 pub(crate) async fn cmd_gdrive_auth(
@@ -149,152 +124,37 @@ pub(crate) async fn cmd_gdrive_auth(
     let output = &tokens_path_or_default(output)?;
     info!("Starting Google Drive authentication");
 
-    // Build auth config: CLI flags take precedence over environment variables.
-    let client_id = client_id
-        .or_else(|| std::env::var("AXIOM_GOOGLE_CLIENT_ID").ok())
-        .or_else(|| std::env::var("AXIOMVAULT_GOOGLE_CLIENT_ID").ok())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Google OAuth2 client ID not provided. \
-                 Use --client-id or set AXIOM_GOOGLE_CLIENT_ID (legacy: AXIOMVAULT_GOOGLE_CLIENT_ID)"
-            )
-        })?;
-
-    // PKCE makes client_secret optional for public clients.
-    let client_secret = client_secret
-        .or_else(|| std::env::var("AXIOM_GOOGLE_CLIENT_SECRET").ok())
-        .or_else(|| std::env::var("AXIOMVAULT_GOOGLE_CLIENT_SECRET").ok());
-
     let auth_config = AuthConfig {
-        client_id,
-        client_secret,
-        redirect_url: "http://localhost:8080/callback".to_string(),
+        client_id: resolve_gdrive_client_id(client_id)?,
+        client_secret: resolve_gdrive_client_secret(client_secret),
+        redirect_url: GDRIVE_REDIRECT_URL.to_string(),
     };
-
     let auth_manager = AuthManager::new(auth_config).context("Failed to create auth manager")?;
-
     let CloudAuthorization {
         url: auth_url,
         csrf_token,
         pkce_verifier,
     } = auth_manager.authorization_url();
 
-    // Start local HTTP server to capture the OAuth callback
-    let listener = TcpListener::bind("127.0.0.1:8080").await.context(
-        "Failed to start local server on port 8080. Is another process using this port?",
-    )?;
-
-    println!("Starting Google Drive authentication...");
-    println!();
-    println!("Opening your browser to authorize AxiomVault...");
-
-    // Try to open the browser automatically
-    let browser_opened = open::that(&auth_url).is_ok();
-
-    if browser_opened {
-        println!("Browser opened successfully!");
-    } else {
-        println!("Could not open browser automatically.");
-        println!("Please visit this URL to authorize:");
-        println!();
-        println!("  {}", auth_url);
-    }
-
-    println!();
-    println!("Waiting for authorization... (Press Ctrl+C to cancel)");
-
-    // Wait for the OAuth callback with a 5-minute timeout
-    let (mut socket, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(300), listener.accept())
-            .await
-            .context("OAuth callback timed out after 5 minutes")?
-            .context("Failed to accept connection")?;
-
-    // Read the HTTP request
-    let mut buffer = vec![0u8; 4096];
-    let n = socket
-        .read(&mut buffer)
-        .await
-        .context("Failed to read request")?;
-    let request = String::from_utf8_lossy(&buffer[..n]);
-
-    // Parse the request to extract the authorization code
-    let first_line = request.lines().next().unwrap_or("");
-    let path = first_line.split_whitespace().nth(1).unwrap_or("/");
-
-    // Extract code and state from the callback URL
-    let callback_url = format!("http://localhost:8080{}", path);
-    let parsed_url = Url::parse(&callback_url).context("Failed to parse callback URL")?;
-
-    let mut code = None;
-    let mut state = None;
-
-    for (key, value) in parsed_url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.to_string()),
-            "state" => state = Some(value.to_string()),
-            _ => {}
-        }
-    }
-
-    let auth_code = code.ok_or_else(|| anyhow::anyhow!("No authorization code received"))?;
-    let received_state = state.ok_or_else(|| anyhow::anyhow!("No state parameter received"))?;
-
-    // Verify CSRF token
-    if received_state != csrf_token {
-        // Send error response
-        let error_html = r#"<!DOCTYPE html>
-<html>
-<head><title>Authentication Failed</title></head>
-<body style="font-family: sans-serif; text-align: center; padding: 50px;">
-<h1 style="color: #d32f2f;">Authentication Failed</h1>
-<p>Security validation failed. Please try again.</p>
-</body>
-</html>"#;
-        let response = format!(
-            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
-            error_html.len(),
-            error_html
-        );
-        socket.write_all(response.as_bytes()).await.ok();
-        anyhow::bail!("CSRF token mismatch - possible security issue");
-    }
-
-    // Send success response to browser
-    let success_html = r#"<!DOCTYPE html>
-<html>
-<head><title>Authentication Successful</title></head>
-<body style="font-family: sans-serif; text-align: center; padding: 50px;">
-<h1 style="color: #4caf50;">Authentication Successful!</h1>
-<p>You have successfully authorized AxiomVault to access your Google Drive.</p>
-<p>You can close this window and return to the terminal.</p>
-</body>
-</html>"#;
-
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
-        success_html.len(),
-        success_html
-    );
-    socket.write_all(response.as_bytes()).await.ok();
-
-    info!("Authorization code received, exchanging for tokens");
-    println!();
-    println!("Authorization received! Exchanging for access tokens...");
-
-    let tokens = auth_manager
-        .exchange_code(&auth_code, pkce_verifier)
-        .await
-        .context("Failed to exchange authorization code")?;
-
-    // Save tokens to file with restricted permissions
-    let tokens_json =
-        serde_json::to_string_pretty(&tokens).context("Failed to serialize tokens")?;
-
     // The default location may not exist yet; create it private to the user.
     let default_dir = output.parent().filter(|_| !explicit_output);
 
-    save_tokens(output, default_dir, tokens_json.as_bytes()).await?;
+    let tokens = complete_local_oauth_flow(
+        "Google Drive",
+        &auth_url,
+        &csrf_token,
+        |auth_code| async move {
+            let tokens = auth_manager
+                .exchange_code(&auth_code, pkce_verifier)
+                .await
+                .context("Failed to exchange authorization code")?;
+            let tokens_json =
+                serde_json::to_string_pretty(&tokens).context("Failed to serialize tokens")?;
+            save_tokens::<Tokens>(output, default_dir, tokens_json.as_bytes()).await?;
+            Ok(tokens)
+        },
+    )
+    .await?;
 
     println!();
     println!("Authentication successful!");
@@ -316,6 +176,9 @@ pub(crate) async fn cmd_gdrive_create(
     let tokens_path = tokens_path_or_default(tokens_path)?;
     info!("Creating new vault on Google Drive: {}", name);
 
+    // Know the recovery key can be shown before asking for a password.
+    may_print_recovery_words(std::io::stdout().is_terminal())?;
+
     let kdf_params = kdf_params_from(strength);
 
     let password = prompt_password("Enter password: ")?;
@@ -328,7 +191,7 @@ pub(crate) async fn cmd_gdrive_create(
     validate_password_strength(&password)?;
 
     // Load tokens
-    let tokens = read_tokens(&tokens_path).await?;
+    let tokens = read_gdrive_tokens(&tokens_path).await?;
 
     let vault_id = VaultId::unique(name).context("Invalid vault name")?;
 
@@ -356,7 +219,7 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: Option<&Path>)
     let password = vault_password("Enter password: ")?;
 
     // Load tokens
-    let tokens = read_tokens(&tokens_path).await?;
+    let tokens = read_gdrive_tokens(&tokens_path).await?;
 
     let (manager, provider_config) = gdrive_manager(tokens, folder_id);
 
@@ -457,70 +320,12 @@ mod tests {
         dir
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn save_tokens_replaces_only_a_token_file_and_keeps_it_private() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = token_test_dir("save");
-        let output = dir.join("tokens.json");
-        let mut rotated = test_tokens();
-        rotated.access_token = "rotated-access".to_string();
-
-        save_tokens(&output, None, &serde_json::to_vec(&test_tokens()).unwrap())
-            .await
-            .unwrap();
-        // Re-authentication replaces the previous token file.
-        save_tokens(&output, None, &serde_json::to_vec(&rotated).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(
-            read_tokens(&output).await.unwrap().access_token,
-            "rotated-access"
-        );
-        let mode = std::fs::metadata(&output).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-        assert_eq!(
-            std::fs::read_dir(&dir).unwrap().count(),
-            1,
-            "temp file left"
-        );
-
-        let json = serde_json::to_vec(&rotated).unwrap();
-        let other = dir.join("notes.txt");
-        std::fs::write(&other, b"keep").unwrap();
-        assert!(save_tokens(&other, None, &json).await.is_err());
-        assert_eq!(std::fs::read(&other).unwrap(), b"keep");
-
-        let link = dir.join("link.json");
-        std::os::unix::fs::symlink(&output, &link).unwrap();
-        assert!(save_tokens(&link, None, &json).await.is_err());
-        assert!(std::fs::symlink_metadata(&link)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn read_tokens_refuses_an_oversized_file() {
-        let dir = token_test_dir("oversized");
-        let path = dir.join("tokens.json");
-        std::fs::write(&path, vec![b' '; MAX_TOKENS_FILE_BYTES as usize + 1]).unwrap();
-
-        let err = read_tokens(&path).await.unwrap_err().to_string();
-        assert!(err.contains("larger than 64 KiB"), "{err}");
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
     #[tokio::test]
     async fn read_tokens_hints_at_auth_when_the_file_is_missing() {
         let dir = token_test_dir("missing");
         let path = dir.join("tokens.json");
 
-        let err = read_tokens(&path).await.unwrap_err().to_string();
+        let err = read_gdrive_tokens(&path).await.unwrap_err().to_string();
         assert!(
             err.contains(&format!(
                 "run `axiom remote gdrive auth --output {}`",
@@ -531,7 +336,7 @@ mod tests {
 
         if let Ok(default) = tokens_path_or_default(None) {
             if !default.exists() {
-                let err = read_tokens(&default).await.unwrap_err().to_string();
+                let err = read_gdrive_tokens(&default).await.unwrap_err().to_string();
                 assert!(err.contains("run `axiom remote gdrive auth` to"), "{err}");
             }
         }
@@ -544,5 +349,27 @@ mod tests {
         let resolver = TokensFileResolver(test_tokens());
         assert!(resolver.resolve("gdrive", "local:gdrive:other").is_err());
         assert!(resolver.resolve("dropbox", GDRIVE_CREDENTIAL_REF).is_err());
+    }
+
+    #[test]
+    fn resolve_gdrive_client_id_prefers_primary_env_name() {
+        assert_eq!(
+            resolve_required_oauth_value(
+                None,
+                Some("primary-client-id".into()),
+                Some("legacy-client-id".into()),
+                "missing",
+            )
+            .unwrap(),
+            "primary-client-id"
+        );
+    }
+
+    #[test]
+    fn resolve_gdrive_client_secret_falls_back_to_legacy_value() {
+        assert_eq!(
+            resolve_optional_oauth_value(None, None, Some("legacy-secret".into())),
+            Some("legacy-secret".into())
+        );
     }
 }
