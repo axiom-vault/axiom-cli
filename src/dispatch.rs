@@ -14,14 +14,15 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                 name,
                 path,
                 strength,
-            } => commands::vault::cmd_create(&name, &path, strength).await,
+                recovery_out,
+            } => commands::vault::cmd_create(&name, &path, strength, recovery_out.as_deref()).await,
             VaultCommands::Open { path } => commands::vault::cmd_open(&path).await,
             VaultCommands::Info { path } => commands::vault::cmd_info(&path).await,
             VaultCommands::Check { path, shallow } => {
                 commands::check::cmd_check(&path, shallow).await
             }
-            VaultCommands::Migrate { path, dry_run } => {
-                commands::migrate::cmd_migrate(&path, dry_run).await
+            VaultCommands::List { root, depth, json } => {
+                commands::vault_list::cmd_vault_list(&root, depth, json)
             }
         },
         Commands::File { command } => match command {
@@ -55,7 +56,6 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             RecoveryCommands::ShowKey { path } => {
                 commands::recovery::cmd_show_recovery_key(&path).await
             }
-            RecoveryCommands::Enable { path } => commands::recovery::cmd_migrate_vault(&path).await,
         },
         Commands::HardwareKey { command } => match command {
             HardwareKeyCommands::Enroll {
@@ -76,17 +76,26 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                     client_id,
                     client_secret,
                     output,
-                } => commands::gdrive::cmd_gdrive_auth(client_id, client_secret, &output).await,
+                } => {
+                    commands::gdrive::cmd_gdrive_auth(client_id, client_secret, output.as_deref())
+                        .await
+                }
                 GdriveCommands::Create {
                     name,
                     folder_id,
                     tokens,
                     strength,
                 } => {
-                    commands::gdrive::cmd_gdrive_create(&name, &folder_id, &tokens, strength).await
+                    commands::gdrive::cmd_gdrive_create(
+                        &name,
+                        &folder_id,
+                        tokens.as_deref(),
+                        strength,
+                    )
+                    .await
                 }
                 GdriveCommands::Open { folder_id, tokens } => {
-                    commands::gdrive::cmd_gdrive_open(&folder_id, &tokens).await
+                    commands::gdrive::cmd_gdrive_open(&folder_id, tokens.as_deref()).await
                 }
             },
             RemoteCommands::Dropbox { command } => match command {
@@ -159,6 +168,7 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
         },
         Commands::Mount { command } => match command {
             MountCommands::Webdav { path, port } => commands::webdav::cmd_webdav(&path, port).await,
+            MountCommands::List { json } => commands::mount_list::cmd_mount_list(json),
             #[cfg(feature = "fuse")]
             MountCommands::Fuse {
                 path,
@@ -177,6 +187,10 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                 .await
             }
         },
+        // main runs `axiom agent` before any runtime exists; it never gets here.
+        Commands::Agent { .. } => {
+            bail!("internal error: `axiom agent` must run before the async runtime starts")
+        }
         Commands::Completions { shell, install } => {
             if install {
                 completions::install_completions(shell)?;

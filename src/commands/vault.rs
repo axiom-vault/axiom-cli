@@ -2,7 +2,8 @@
 use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
-    display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    check_recovery_out, display_recovery_words, kdf_params_from, may_print_recovery_words,
+    prompt_password, validate_password_strength, vault_password, write_recovery_words,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -18,6 +19,7 @@ use axiomvault_vault::{
     check_migration_needed, check_vault_health, check_vault_structure, MigrationRegistry,
     MigrationStatus, VaultConfig, VaultManager, VaultOperations, VaultVersion,
 };
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,8 +28,21 @@ use tracing::info;
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
-pub(crate) async fn cmd_create(name: &str, path: &Path, strength: KdfStrength) -> Result<()> {
+pub(crate) async fn cmd_create(
+    name: &str,
+    path: &Path,
+    strength: KdfStrength,
+    recovery_out: Option<&Path>,
+) -> Result<()> {
     info!("Creating new vault");
+
+    // Know where the recovery key can go before asking for a password.
+    match recovery_out {
+        Some(out) => check_recovery_out(out)?,
+        None => may_print_recovery_words(std::io::stdout().is_terminal()).context(
+            "Cannot show the recovery key here; pass --recovery-out <FILE> to write it to a file instead",
+        )?,
+    }
 
     let kdf_params = kdf_params_from(strength);
 
@@ -40,7 +55,7 @@ pub(crate) async fn cmd_create(name: &str, path: &Path, strength: KdfStrength) -
 
     validate_password_strength(&password)?;
 
-    let vault_id = VaultId::new(name).context("Invalid vault name")?;
+    let vault_id = VaultId::unique(name).context("Invalid vault name")?;
     let vault_path = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -53,11 +68,24 @@ pub(crate) async fn cmd_create(name: &str, path: &Path, strength: KdfStrength) -
         .await
         .context("Failed to create vault")?;
 
+    if let Some(out) = recovery_out {
+        write_recovery_words(out, &creation.recovery_words).with_context(|| {
+            format!(
+                "The vault was created, but its recovery key was not saved. \
+                 Show it with `axiom recovery show-key --path {}`",
+                path.display()
+            )
+        })?;
+    }
+
     println!("Vault created successfully!");
     println!("  ID: {}", creation.session.vault_id());
     println!("  Location: {}", path.display());
     println!("  Provider: {}", creation.session.config().provider_type);
-    display_recovery_words(&creation.recovery_words);
+    match recovery_out {
+        Some(out) => println!("  Recovery key: written to {}", out.display()),
+        None => display_recovery_words(&creation.recovery_words),
+    }
 
     Ok(())
 }
@@ -66,7 +94,7 @@ pub(crate) async fn cmd_create(name: &str, path: &Path, strength: KdfStrength) -
 pub(crate) async fn cmd_open(path: &Path) -> Result<()> {
     info!("Opening vault");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let vault_path = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -92,7 +120,7 @@ pub(crate) async fn cmd_open(path: &Path) -> Result<()> {
 
 /// List directory contents.
 pub(crate) async fn cmd_list(vault_path: &Path, dir: &str) -> Result<()> {
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -134,13 +162,8 @@ pub(crate) async fn cmd_list(vault_path: &Path, dir: &str) -> Result<()> {
 pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Result<()> {
     info!("Adding file to vault");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
-
-    // Read source file
-    let content = tokio::fs::read(source)
-        .await
-        .context("Failed to read source file")?;
 
     let manager = VaultManager::new();
     let provider_config = serde_json::json!({
@@ -155,14 +178,16 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
     let ops = VaultOperations::new(&session)?;
     let dest_path = VaultPath::parse(dest).context("Invalid destination path")?;
 
-    ops.create_file(&dest_path, &content)
+    // Streams the source through encryption so large files never sit in memory.
+    ops.create_file_from_path(&dest_path, source)
         .await
         .context("Failed to add file")?;
+    let (_, _, size) = ops.metadata(&dest_path).await?;
 
     println!(
         "File added successfully: {} ({} bytes)",
         dest,
-        content.len()
+        size.unwrap_or_default()
     );
 
     Ok(())
@@ -172,7 +197,9 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
 pub(crate) async fn cmd_extract(vault_path: &Path, source: &str, dest: &Path) -> Result<()> {
     info!("Extracting file from vault");
 
-    let password = prompt_password("Enter password: ")?;
+    ensure_destination_free(dest)?;
+
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -188,21 +215,37 @@ pub(crate) async fn cmd_extract(vault_path: &Path, source: &str, dest: &Path) ->
     let ops = VaultOperations::new(&session)?;
     let source_path = VaultPath::parse(source).context("Invalid source path")?;
 
-    let content = ops
-        .read_file(&source_path)
+    // Streams the decrypted content to disk; refuses to overwrite an existing file.
+    ops.export_file_to_path(&source_path, dest)
         .await
-        .context("Failed to read file from vault")?;
-
-    tokio::fs::write(dest, &content)
+        .context("Failed to extract file from vault")?;
+    let size = tokio::fs::metadata(dest)
         .await
-        .context("Failed to write output file")?;
+        .context("Failed to inspect output file")?
+        .len();
 
     println!(
         "File extracted successfully: {} ({} bytes)",
         dest.display(),
-        content.len()
+        size
     );
 
+    Ok(())
+}
+
+/// Refuse an extract destination that already exists, including a symlink.
+///
+/// The core export writes the plaintext with mode 0600 and will not replace an
+/// existing path; this early check, which does not follow symlinks, only gives
+/// a clear error before the vault is opened.
+fn ensure_destination_free(dest: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(dest).is_ok() {
+        anyhow::bail!(
+            "Destination {} already exists; refusing to overwrite it or follow a symlink. \
+             Choose a path that does not exist.",
+            dest.display()
+        );
+    }
     Ok(())
 }
 
@@ -210,7 +253,7 @@ pub(crate) async fn cmd_extract(vault_path: &Path, source: &str, dest: &Path) ->
 pub(crate) async fn cmd_mkdir(vault_path: &Path, dir: &str) -> Result<()> {
     info!("Creating directory");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -239,7 +282,7 @@ pub(crate) async fn cmd_mkdir(vault_path: &Path, dir: &str) -> Result<()> {
 pub(crate) async fn cmd_remove(vault_path: &Path, file: &str) -> Result<()> {
     info!("Removing file from vault");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -268,7 +311,7 @@ pub(crate) async fn cmd_remove(vault_path: &Path, file: &str) -> Result<()> {
 pub(crate) async fn cmd_info(path: &Path) -> Result<()> {
     info!("Getting vault info");
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -298,4 +341,32 @@ pub(crate) async fn cmd_info(path: &Path) -> Result<()> {
     println!("    Parallelism: {}", config.kdf_params.parallelism);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_destination_must_not_exist() {
+        let dir = std::env::temp_dir().join(format!("axiom-extract-dest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let fresh = dir.join("fresh.txt");
+        assert!(ensure_destination_free(&fresh).is_ok());
+
+        let existing = dir.join("existing.txt");
+        std::fs::write(&existing, b"keep").unwrap();
+        let err = ensure_destination_free(&existing).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+
+        #[cfg(unix)]
+        {
+            let dangling = dir.join("dangling-link");
+            std::os::unix::fs::symlink(dir.join("missing-target"), &dangling).unwrap();
+            assert!(ensure_destination_free(&dangling).is_err());
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

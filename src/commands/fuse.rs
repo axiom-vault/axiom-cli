@@ -1,10 +1,12 @@
-use crate::password::prompt_password;
+use crate::password::vault_password;
 use anyhow::{Context, Result};
 use axiomvault_fuse::mount::{self, MountOptions};
 use axiomvault_vault::VaultManager;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::runtime::Handle;
+use tokio::signal::unix::{signal, SignalKind};
 use tracing::info;
 
 fn auto_unmount_enabled(allow_other: bool) -> bool {
@@ -28,7 +30,7 @@ pub(crate) async fn cmd_mount(
         anyhow::bail!(mount::fuse_info());
     }
 
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let manager = VaultManager::new();
     let provider_config = serde_json::json!({
         "root": vault_path.to_string_lossy(),
@@ -53,12 +55,38 @@ pub(crate) async fn cmd_mount(
     println!("Vault mounted at {}", handle.mount_point().display());
     println!("Press Ctrl+C to unmount.");
 
-    tokio::signal::ctrl_c()
-        .await
-        .context("Failed to wait for Ctrl+C")?;
+    let mut sigterm =
+        signal(SignalKind::terminate()).context("Failed to install SIGTERM handler")?;
+    let mut sighup = signal(SignalKind::hangup()).context("Failed to install SIGHUP handler")?;
+    // fuser offers no async notification when the session ends, so poll for an
+    // external unmount (`fusermount3 -u`).
+    let mut poll = tokio::time::interval(Duration::from_millis(200));
+    loop {
+        tokio::select! {
+            res = tokio::signal::ctrl_c() => {
+                res.context("Failed to wait for Ctrl+C")?;
+                break;
+            }
+            _ = sigterm.recv() => break,
+            _ = sighup.recv() => break,
+            _ = poll.tick() => {
+                if handle.is_finished() {
+                    break;
+                }
+            }
+        }
+    }
 
-    println!("Unmounting {}", handle.mount_point().display());
-    handle.unmount();
+    if handle.is_finished() {
+        println!("{} was unmounted", handle.mount_point().display());
+    } else {
+        println!("Unmounting {}", handle.mount_point().display());
+    }
+    // Unmounting joins the FUSE thread, which drops the vault session; keep
+    // that blocking work off the async workers.
+    tokio::task::spawn_blocking(move || handle.unmount())
+        .await
+        .context("Failed to unmount vault")?;
     Ok(())
 }
 

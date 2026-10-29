@@ -3,6 +3,7 @@ use crate::cli::{ConflictStrategyArg, KdfStrength, RaidModeArg, SyncModeArg};
 use crate::conversions::{conflict_strategy_from, sync_mode_from};
 use crate::password::{
     display_recovery_words, kdf_params_from, prompt_password, validate_password_strength,
+    vault_password,
 };
 use anyhow::{Context, Result};
 use axiomvault_common::{VaultId, VaultPath};
@@ -30,7 +31,7 @@ pub(crate) async fn cmd_sync(vault_path: &Path, strategy: ConflictStrategyArg) -
     info!("Starting vault sync");
 
     let conflict_strategy = conflict_strategy_from(strategy);
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
@@ -166,7 +167,7 @@ pub(crate) async fn cmd_sync_resolve(
     info!("Resolving sync conflict for {}", file);
 
     let conflict_strategy = conflict_strategy_from(strategy);
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
 
     let manager = VaultManager::new();
