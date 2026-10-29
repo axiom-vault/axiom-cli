@@ -1,7 +1,7 @@
 use crate::cli::{
     Cli, Commands, DropboxCommands, FileCommands, GdriveCommands, HardwareKeyCommands,
-    MountCommands, PasswordCommands, RaidCommands, RecoveryCommands, RemoteCommands, SyncCommands,
-    VaultCommands,
+    IcloudCommands, MountCommands, PasswordCommands, RaidCommands, RecoveryCommands,
+    RemoteCommands, SyncCommands, VaultCommands,
 };
 use crate::{commands, completions};
 use anyhow::{bail, Result};
@@ -117,7 +117,29 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
                     commands::dropbox::cmd_dropbox_open(&root_path, &tokens).await
                 }
             },
-            RemoteCommands::Icloud => bail!("iCloud remote support is not implemented yet"),
+            RemoteCommands::Icloud { command } => match command {
+                IcloudCommands::Create {
+                    name,
+                    root_path,
+                    subfolder,
+                    strength,
+                } => {
+                    commands::icloud::cmd_icloud_create(
+                        &name,
+                        root_path.as_deref(),
+                        subfolder.as_deref(),
+                        strength,
+                    )
+                    .await
+                }
+                IcloudCommands::Open {
+                    root_path,
+                    subfolder,
+                } => {
+                    commands::icloud::cmd_icloud_open(root_path.as_deref(), subfolder.as_deref())
+                        .await
+                }
+            },
         },
         Commands::Sync { command } => match command {
             SyncCommands::Run {

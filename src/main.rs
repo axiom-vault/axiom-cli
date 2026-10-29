@@ -9,6 +9,7 @@ mod completions;
 mod conversions;
 mod dispatch;
 mod password;
+mod private_file;
 
 use anyhow::{bail, Result};
 use clap::Parser;

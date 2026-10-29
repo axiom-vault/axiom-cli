@@ -140,36 +140,42 @@ where
 pub(crate) const MAX_TOKENS_FILE_BYTES: u64 = 64 * 1024;
 
 /// Read and parse a token file, refusing one larger than `MAX_TOKENS_FILE_BYTES`.
-pub(crate) async fn read_tokens<T: DeserializeOwned>(path: &Path) -> Result<T> {
+/// A missing or unreadable-as-tokens file names `auth_command`, which creates it.
+pub(crate) async fn read_tokens<T: DeserializeOwned>(path: &Path, auth_command: &str) -> Result<T> {
     let read_error = || format!("Failed to read tokens file {}", path.display());
     let mut json = String::new();
-    tokio::fs::File::open(path)
-        .await
-        .with_context(read_error)?
-        .take(MAX_TOKENS_FILE_BYTES + 1)
+    let file = match tokio::fs::File::open(path).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!(
+                "Tokens file {} not found; run `{auth_command}` to create it",
+                path.display()
+            );
+        }
+        file => file.with_context(read_error)?,
+    };
+    file.take(MAX_TOKENS_FILE_BYTES + 1)
         .read_to_string(&mut json)
         .await
         .with_context(read_error)?;
     if json.len() as u64 > MAX_TOKENS_FILE_BYTES {
         anyhow::bail!("Tokens file {} is larger than 64 KiB", path.display());
     }
-    serde_json::from_str(&json).context("Failed to parse tokens file")
+    serde_json::from_str(&json).with_context(|| {
+        format!("Failed to parse tokens file; run `{auth_command}` to create a new one")
+    })
 }
 
-/// Publish the token file atomically: write a private temporary file beside it,
-/// sync it, check that it is owner-only, then rename it into place. Only a
-/// regular file that already holds tokens of type `T` is replaced; any other
-/// existing path, including a symlink, is refused.
+/// Save a token file privately and atomically through `write_private_file`.
+/// Only a regular file that already holds tokens of type `T` is replaced; any
+/// other existing path, including a symlink, is refused.
 #[cfg(unix)]
 pub(crate) async fn save_tokens<T: DeserializeOwned>(
     output: &Path,
     default_dir: Option<&Path>,
     json: &[u8],
 ) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     if let Ok(existing) = tokio::fs::symlink_metadata(output).await {
-        if !existing.is_file() || read_tokens::<T>(output).await.is_err() {
+        if !existing.is_file() || read_tokens::<T>(output, "").await.is_err() {
             anyhow::bail!(
                 "{} already exists and is not a token file; refusing to overwrite it",
                 output.display()
@@ -184,55 +190,9 @@ pub(crate) async fn save_tokens<T: DeserializeOwned>(
             .await
             .context("Failed to create token directory")?;
     }
-
-    let mut tmp_name = output
-        .file_name()
-        .context("Token file path has no file name")?
-        .to_os_string();
-    tmp_name.push(".tmp");
-    let tmp_path = output.with_file_name(tmp_name);
-
-    // Remove any stale file so the new one is created fresh with 0o600.
-    // The mode flag in OpenOptions only applies on creation.
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-
-    let published = async {
-        let mut f = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp_path)
-            .await
-            .context("Failed to create token file")?;
-        f.write_all(json)
-            .await
-            .context("Failed to write tokens file")?;
-        f.sync_all().await.context("Failed to write tokens file")?;
-        let mode = f.metadata().await?.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
-            anyhow::bail!("Token file permissions are {mode:o}, expected owner-only");
-        }
-        tokio::fs::rename(&tmp_path, output)
-            .await
-            .context("Failed to publish tokens file")
-    }
-    .await;
-    if published.is_err() {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-    }
-    published?;
-
-    // Sync the directory too, so the rename survives a crash.
-    let dir = match output.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir,
-        _ => Path::new("."),
-    };
-    tokio::fs::File::open(dir)
+    crate::private_file::write_private_file(output, json)
         .await
-        .context("Failed to open token directory")?
-        .sync_all()
-        .await
-        .context("Failed to sync token directory")
+        .context("Failed to save tokens file")
 }
 
 /// Owner-only permissions are not verified here, so refuse to write tokens.
@@ -491,7 +451,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            read_tokens::<Tokens>(&output).await.unwrap().access_token,
+            read_tokens::<Tokens>(&output, "auth")
+                .await
+                .unwrap()
+                .access_token,
             "rotated-access"
         );
         let mode = std::fs::metadata(&output).unwrap().permissions().mode();
@@ -525,7 +488,10 @@ mod tests {
         let path = dir.join("tokens.json");
         std::fs::write(&path, vec![b' '; MAX_TOKENS_FILE_BYTES as usize + 1]).unwrap();
 
-        let err = read_tokens::<Tokens>(&path).await.unwrap_err().to_string();
+        let err = read_tokens::<Tokens>(&path, "auth")
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("larger than 64 KiB"), "{err}");
 
         std::fs::remove_dir_all(&dir).unwrap();

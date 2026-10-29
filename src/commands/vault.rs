@@ -69,13 +69,16 @@ pub(crate) async fn cmd_create(
         .context("Failed to create vault")?;
 
     if let Some(out) = recovery_out {
-        write_recovery_words(out, &creation.recovery_words).with_context(|| {
-            format!(
-                "The vault was created, but its recovery key was not saved. \
-                 Show it with `axiom recovery show-key --path {}`",
-                path.display()
-            )
-        })?;
+        write_recovery_words(out, &creation.recovery_words)
+            .await
+            .with_context(|| {
+                format!(
+                    "The vault was created, but saving its recovery key to {} did not complete. \
+                     Show it with `axiom recovery show-key --path {}`",
+                    out.display(),
+                    path.display()
+                )
+            })?;
     }
 
     println!("Vault created successfully!");

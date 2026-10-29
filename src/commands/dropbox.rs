@@ -97,13 +97,11 @@ fn dropbox_manager(tokens: DropboxTokenFile, root_path: &str) -> (VaultManager, 
     (manager, provider_config)
 }
 
+/// Read the Dropbox token file; a missing or outdated file names the `auth`
+/// command that creates it.
 async fn read_dropbox_tokens(path: &Path) -> Result<DropboxTokenFile> {
-    read_tokens(path).await.with_context(|| {
-        format!(
-            "Run 'axiom remote dropbox auth --output {}' to create it",
-            path.display()
-        )
-    })
+    let auth = format!("axiom remote dropbox auth --output {}", path.display());
+    read_tokens(path, &auth).await
 }
 
 pub(crate) async fn cmd_dropbox_auth(
@@ -295,6 +293,31 @@ mod tests {
         let auth_config = config.auth_config.expect("auth_config is passed to core");
         assert_eq!(auth_config.app_key, "test-app-key");
         assert_eq!(auth_config.app_secret, None);
+    }
+
+    #[tokio::test]
+    async fn read_dropbox_tokens_hints_at_auth() {
+        let path =
+            std::env::temp_dir().join(format!("axiom-dropbox-missing-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let hint = format!(
+            "run `axiom remote dropbox auth --output {}`",
+            path.display()
+        );
+
+        let Err(err) = read_dropbox_tokens(&path).await else {
+            panic!("a missing token file should fail");
+        };
+        assert!(err.to_string().contains(&hint), "{err}");
+
+        // A token file from before the app key was stored.
+        std::fs::write(&path, serde_json::to_vec(&test_tokens().tokens).unwrap()).unwrap();
+        let Err(err) = read_dropbox_tokens(&path).await else {
+            panic!("a token file without an app key should fail");
+        };
+        let err = format!("{err:#}");
+        assert!(err.contains(&hint) && err.contains("app_key"), "{err}");
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

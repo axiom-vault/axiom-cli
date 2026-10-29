@@ -104,6 +104,17 @@ fn tokens_path_or_default(path: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
+/// Read the Google Drive token file; a missing file names the `auth` command
+/// that creates it.
+async fn read_gdrive_tokens(path: &Path) -> Result<Tokens> {
+    let auth = if tokens_path_or_default(None).ok().as_deref() == Some(path) {
+        "axiom remote gdrive auth".to_string()
+    } else {
+        format!("axiom remote gdrive auth --output {}", path.display())
+    };
+    read_tokens(path, &auth).await
+}
+
 pub(crate) async fn cmd_gdrive_auth(
     client_id: Option<String>,
     client_secret: Option<String>,
@@ -180,7 +191,7 @@ pub(crate) async fn cmd_gdrive_create(
     validate_password_strength(&password)?;
 
     // Load tokens
-    let tokens = read_tokens(&tokens_path).await?;
+    let tokens = read_gdrive_tokens(&tokens_path).await?;
 
     let vault_id = VaultId::unique(name).context("Invalid vault name")?;
 
@@ -208,7 +219,7 @@ pub(crate) async fn cmd_gdrive_open(folder_id: &str, tokens_path: Option<&Path>)
     let password = vault_password("Enter password: ")?;
 
     // Load tokens
-    let tokens = read_tokens(&tokens_path).await?;
+    let tokens = read_gdrive_tokens(&tokens_path).await?;
 
     let (manager, provider_config) = gdrive_manager(tokens, folder_id);
 
@@ -300,6 +311,37 @@ mod tests {
                 config_dir.join("axiomvault").join("gdrive-tokens.json")
             );
         }
+    }
+
+    fn token_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("axiom-gdrive-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn read_tokens_hints_at_auth_when_the_file_is_missing() {
+        let dir = token_test_dir("missing");
+        let path = dir.join("tokens.json");
+
+        let err = read_gdrive_tokens(&path).await.unwrap_err().to_string();
+        assert!(
+            err.contains(&format!(
+                "run `axiom remote gdrive auth --output {}`",
+                path.display()
+            )),
+            "{err}"
+        );
+
+        if let Ok(default) = tokens_path_or_default(None) {
+            if !default.exists() {
+                let err = read_gdrive_tokens(&default).await.unwrap_err().to_string();
+                assert!(err.contains("run `axiom remote gdrive auth` to"), "{err}");
+            }
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

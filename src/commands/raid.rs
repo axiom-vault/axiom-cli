@@ -21,7 +21,7 @@ use axiomvault_vault::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tracing::info;
 use url::Url;
@@ -154,49 +154,27 @@ async fn load_raid_config(vault_path: &Path) -> Result<Option<RaidConfig>> {
 }
 
 /// Save the RAID configuration atomically (write-then-rename). The file holds
-/// the composite key, so on Unix it is created with mode 0600.
+/// the composite key, so it is created with mode 0600, synced before and after
+/// the rename, and refused on non-Unix, where that mode cannot be checked.
 async fn save_raid_config(vault_path: &Path, config: &RaidConfig) -> Result<()> {
     let dir = vault_path.join(".axiomvault");
-    let tmp_path = dir.join("raid.json.tmp");
-    let final_path = dir.join("raid.json");
 
     let json = Zeroizing::new(
         serde_json::to_string_pretty(config).context("Failed to serialize RAID config")?,
     );
 
-    // Remove a stale tmp file so the new one is created fresh with 0o600.
-    // The mode flag in OpenOptions only applies on creation.
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
     let mut dir_builder = tokio::fs::DirBuilder::new();
     dir_builder.recursive(true);
     #[cfg(unix)]
-    {
-        options.mode(0o600);
-        dir_builder.mode(0o700);
-    }
+    dir_builder.mode(0o700);
     dir_builder
         .create(&dir)
         .await
         .context("Failed to create .axiomvault directory")?;
 
-    let mut file = options
-        .open(&tmp_path)
+    crate::private_file::write_private_file(&raid_config_path(vault_path), json.as_bytes())
         .await
-        .context("Failed to create RAID config tmp")?;
-    file.write_all(json.as_bytes())
-        .await
-        .context("Failed to write RAID config tmp")?;
-    file.flush()
-        .await
-        .context("Failed to write RAID config tmp")?;
-    drop(file);
-    tokio::fs::rename(&tmp_path, &final_path)
-        .await
-        .context("Failed to rename RAID config")?;
-    Ok(())
+        .context("Failed to save RAID config")
 }
 
 /// Convert a `RaidConfig` into a `RaidMode`.
