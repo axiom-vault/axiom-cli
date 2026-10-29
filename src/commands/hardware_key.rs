@@ -1,4 +1,4 @@
-use crate::password::prompt_password;
+use crate::password::vault_password;
 use anyhow::{anyhow, bail, Context, Result};
 use axiomvault_storage::StorageProvider;
 use axiomvault_vault::{
@@ -6,43 +6,36 @@ use axiomvault_vault::{
     VaultConfig, VaultManager, VaultSession,
 };
 use std::path::Path;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
-const HARDWARE_SECRET_ENV_VARS: [&str; 2] =
-    ["AXIOM_YUBIKEY_RESPONSE", "AXIOM_HARDWARE_KEY_RESPONSE"];
-
-struct LoadedHardwareSecret {
-    source_env_var: &'static str,
-    bytes: Vec<u8>,
-}
-
-impl LoadedHardwareSecret {
-    fn source_env_var(&self) -> &'static str {
-        self.source_env_var
-    }
-
-    fn as_slice(&self) -> &[u8] {
-        self.bytes.as_slice()
-    }
-}
-
-impl Drop for LoadedHardwareSecret {
-    fn drop(&mut self) {
-        self.bytes.zeroize();
-    }
-}
+/// Minimum decoded length of a hardware-key response. A YubiKey HMAC-SHA1
+/// response is 20 bytes. The core enforces the same floor as a backstop.
+const MIN_RESPONSE_BYTES: usize = 16;
+const RESPONSE_PROMPT: &str = "YubiKey response (hex:..., at least 16 bytes): ";
+const RESPONSE_FORMAT_HINT: &str = "Enter the response as hex with a `hex:` prefix, \
+     at least 16 bytes (32 hex digits); a YubiKey HMAC-SHA1 response is 20 bytes.";
 
 pub(crate) async fn cmd_enroll(
     path: &Path,
     label: Option<&str>,
     key_id: Option<&str>,
 ) -> Result<()> {
-    let password = prompt_password("Enter password: ")?;
-    let secret = load_hardware_secret_from_env()?;
+    let password = vault_password("Enter password: ")?;
+    let secret = read_hardware_response()?;
+    enroll(path, label, key_id, &password, &secret).await
+}
+
+async fn enroll(
+    path: &Path,
+    label: Option<&str>,
+    key_id: Option<&str>,
+    password: &[u8],
+    secret: &[u8],
+) -> Result<()> {
     let manager = VaultManager::new();
     let provider_config = local_provider_config(path);
     let mut session = manager
-        .open_vault("local", provider_config, &password)
+        .open_vault("local", provider_config, password)
         .await
         .context("Failed to open vault")?;
 
@@ -55,15 +48,14 @@ pub(crate) async fn cmd_enroll(
 
     session
         .config_mut()
-        .enroll_hardware_key(&master_key, secret.as_slice(), metadata)
+        .enroll_hardware_key(&master_key, secret, metadata)
         .context("Failed to enroll hardware key")?;
     manager
-        .save_config(&session)
+        .save_config(&mut session)
         .await
         .context("Failed to save hardware-key enrollment")?;
 
     println!("Hardware key enrolled successfully.");
-    println!(" Secret source: {}", secret.source_env_var());
     println!(" Kind: YubiKey challenge-response bytes");
     Ok(())
 }
@@ -75,11 +67,15 @@ pub(crate) async fn cmd_status(path: &Path) -> Result<()> {
 }
 
 pub(crate) async fn cmd_remove(path: &Path) -> Result<()> {
-    let password = prompt_password("Enter password: ")?;
+    let password = vault_password("Enter password: ")?;
+    remove(path, &password).await
+}
+
+async fn remove(path: &Path, password: &[u8]) -> Result<()> {
     let manager = VaultManager::new();
     let provider_config = local_provider_config(path);
     let mut session = manager
-        .open_vault("local", provider_config, &password)
+        .open_vault("local", provider_config, password)
         .await
         .context("Failed to open vault")?;
 
@@ -90,7 +86,7 @@ pub(crate) async fn cmd_remove(path: &Path) -> Result<()> {
 
     session.config_mut().remove_hardware_key();
     manager
-        .save_config(&session)
+        .save_config(&mut session)
         .await
         .context("Failed to save hardware-key removal")?;
     println!("Hardware key removed successfully.");
@@ -99,9 +95,13 @@ pub(crate) async fn cmd_remove(path: &Path) -> Result<()> {
 
 pub(crate) async fn cmd_test(path: &Path) -> Result<()> {
     let (config, _) = load_local_config_and_provider(path).await?;
-    let secret = load_hardware_secret_from_env()?;
+    let secret = read_hardware_response()?;
+    verify_response(&config, &secret)
+}
+
+fn verify_response(config: &VaultConfig, secret: &[u8]) -> Result<()> {
     let verified = config
-        .verify_hardware_key(secret.as_slice())
+        .verify_hardware_key(secret)
         .context("Failed to verify hardware key")?
         .is_some();
 
@@ -115,9 +115,17 @@ pub(crate) async fn cmd_test(path: &Path) -> Result<()> {
 
 pub(crate) async fn cmd_open(path: &Path) -> Result<()> {
     let (config, provider) = load_local_config_and_provider(path).await?;
-    let secret = load_hardware_secret_from_env()?;
+    let secret = read_hardware_response()?;
+    open_with_response(config, provider, &secret).await
+}
+
+async fn open_with_response(
+    config: VaultConfig,
+    provider: std::sync::Arc<dyn StorageProvider>,
+    secret: &[u8],
+) -> Result<()> {
     let master_key = config
-        .verify_hardware_key(secret.as_slice())
+        .verify_hardware_key(secret)
         .context("Failed to verify hardware key")?
         .ok_or_else(|| anyhow!("Hardware-key response did not verify for this vault"))?;
     let tree = VaultSession::load_and_decrypt_tree(&provider, &master_key)
@@ -133,49 +141,52 @@ pub(crate) async fn cmd_open(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn load_hardware_secret_from_env() -> Result<LoadedHardwareSecret> {
-    for env_var in HARDWARE_SECRET_ENV_VARS {
-        if let Ok(mut value) = std::env::var(env_var) {
-            if value.trim().is_empty() {
-                value.zeroize();
-                continue;
-            }
-
-            let decoded = decode_hardware_secret(&value)
-                .with_context(|| format!("Failed to decode {env_var}"));
-            value.zeroize();
-
-            return decoded.map(|bytes| LoadedHardwareSecret {
-                source_env_var: env_var,
-                bytes,
-            });
-        }
-    }
-
-    bail!(
-        "Set {} to the YubiKey challenge-response bytes (plain UTF-8 or hex:...)",
-        hardware_secret_env_names().join(" or ")
-    )
+/// Read the hardware-key response from the terminal with echo off.
+fn read_hardware_response() -> Result<Zeroizing<Vec<u8>>> {
+    load_hardware_response(rpassword::ConfigBuilder::new().build())
 }
 
-fn decode_hardware_secret(value: &str) -> Result<Vec<u8>> {
+/// Prompt for the response on the input `config` names (the terminal by
+/// default), read it with echo off and decode it. No environment variable is
+/// consulted.
+fn load_hardware_response(config: rpassword::Config) -> Result<Zeroizing<Vec<u8>>> {
+    let input = Zeroizing::new(
+        rpassword::prompt_password_with_config(RESPONSE_PROMPT, config)
+            .context("Failed to read hardware-key response")?,
+    );
+    decode_hardware_secret(&input)
+}
+
+/// Decode a `hex:` response and enforce the entropy floor. Errors never
+/// include the input, so a typo does not leak part of the secret.
+fn decode_hardware_secret(value: &str) -> Result<Zeroizing<Vec<u8>>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        bail!("Hardware-key response cannot be empty");
+        bail!("Hardware-key response cannot be empty. {RESPONSE_FORMAT_HINT}");
     }
 
-    if let Some(hex_value) = trimmed.strip_prefix("hex:") {
-        return decode_hex_secret(hex_value);
-    }
+    let Some(hex_value) = trimmed.strip_prefix("hex:") else {
+        bail!("Plain-text hardware-key responses are not accepted. {RESPONSE_FORMAT_HINT}");
+    };
 
-    Ok(trimmed.as_bytes().to_vec())
+    let bytes = decode_hex_secret(hex_value)?;
+    if bytes.len() < MIN_RESPONSE_BYTES {
+        bail!(
+            "Hardware-key response is {} bytes, but at least {MIN_RESPONSE_BYTES} bytes \
+             are required. {RESPONSE_FORMAT_HINT}",
+            bytes.len()
+        );
+    }
+    Ok(bytes)
 }
 
-fn decode_hex_secret(value: &str) -> Result<Vec<u8>> {
-    let cleaned: String = value
-        .chars()
-        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '_')
-        .collect();
+fn decode_hex_secret(value: &str) -> Result<Zeroizing<Vec<u8>>> {
+    let cleaned: Zeroizing<String> = Zeroizing::new(
+        value
+            .chars()
+            .filter(|ch| !ch.is_ascii_whitespace() && *ch != '_')
+            .collect(),
+    );
 
     if cleaned.is_empty() {
         bail!("hex hardware-key response cannot be empty");
@@ -184,19 +195,27 @@ fn decode_hex_secret(value: &str) -> Result<Vec<u8>> {
         bail!("hex hardware-key response must contain an even number of digits");
     }
 
-    let mut bytes = Vec::with_capacity(cleaned.len() / 2);
-    for pair in cleaned.as_bytes().chunks_exact(2) {
-        let hi = decode_hex_nibble(pair[0] as char)?;
-        let lo = decode_hex_nibble(pair[1] as char)?;
+    let mut bytes = Zeroizing::new(Vec::with_capacity(cleaned.len() / 2));
+    for (index, pair) in cleaned.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let hi = decode_hex_nibble(pair[0], index * 2)?;
+        let lo = decode_hex_nibble(pair[1], index * 2 + 1)?;
         bytes.push((hi << 4) | lo);
     }
     Ok(bytes)
 }
 
-fn decode_hex_nibble(ch: char) -> Result<u8> {
-    ch.to_digit(16)
+/// Decode one hex digit. The error names only the byte position, never the
+/// byte itself, so a typo does not leak part of the secret.
+fn decode_hex_nibble(byte: u8, position: usize) -> Result<u8> {
+    (byte as char)
+        .to_digit(16)
         .map(|digit| digit as u8)
-        .ok_or_else(|| anyhow!("invalid hex digit '{ch}'"))
+        .ok_or_else(|| {
+            anyhow!(
+                "invalid hex digit at byte position {position} \
+                 (whitespace and underscores are not counted)"
+            )
+        })
 }
 
 fn format_hardware_key_status(config: &VaultConfig, include_metadata: bool) -> String {
@@ -220,10 +239,6 @@ fn format_hardware_key_status(config: &VaultConfig, include_metadata: bool) -> S
     }
 
     lines.join("\n")
-}
-
-fn hardware_secret_env_names() -> Vec<&'static str> {
-    HARDWARE_SECRET_ENV_VARS.to_vec()
 }
 
 async fn load_local_config_and_provider(
@@ -252,39 +267,65 @@ fn local_provider_config(path: &Path) -> serde_json::Value {
 }
 
 #[cfg(test)]
-#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::{
-        cmd_enroll, cmd_open, cmd_remove, cmd_status, cmd_test, decode_hardware_secret,
-        format_hardware_key_status, load_hardware_secret_from_env, load_local_config_and_provider,
-        local_provider_config,
+        decode_hardware_secret, enroll, format_hardware_key_status, load_hardware_response,
+        load_local_config_and_provider, local_provider_config, open_with_response, remove,
+        verify_response,
     };
     use axiomvault_common::VaultId;
     use axiomvault_crypto::KdfParams;
     use axiomvault_vault::VaultManager;
     use std::{
         fs,
+        io::Cursor,
         path::{Path, PathBuf},
-        sync::Mutex,
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    const PASSWORD: &str = "test-password";
+    const PASSWORD: &[u8] = b"test-password";
     const ENROLLED_RESPONSE: &str = "hex:73696d756c617465642d796b2d726573706f6e7365";
-    const WRONG_RESPONSE: &str = "hex:746f74616c6c792d77726f6e672d68617264776172652d736563726574";
+    const WRONG_RESPONSE: &str = "hex:77726f6e672d726573706f6e73652d6279746573";
+    /// 15 and 16 bytes of hex.
+    const HEX_15: &str = "000102030405060708090a0b0c0d0e";
+    const HEX_16: &str = "000102030405060708090a0b0c0d0e0f";
 
-    #[test]
-    fn decodes_plaintext_secret() {
-        let decoded = decode_hardware_secret("simulated-yubikey-response").unwrap();
-        assert_eq!(decoded, b"simulated-yubikey-response");
+    fn scripted_input(input: &str) -> rpassword::Config {
+        rpassword::ConfigBuilder::new()
+            .input_reader(Cursor::new(input.as_bytes().to_vec()))
+            .output_discard()
+            .build()
     }
 
     #[test]
-    fn decodes_hex_secret() {
-        let decoded = decode_hardware_secret("hex:73696d756c617465642d796b").unwrap();
-        assert_eq!(decoded, b"simulated-yk");
+    fn rejects_15_byte_response() {
+        let err = decode_hardware_secret(&format!("hex:{HEX_15}")).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("is 15 bytes"), "{message}");
+        assert!(message.contains("at least 16 bytes"), "{message}");
+        assert!(!message.contains(HEX_15), "{message}");
+    }
+
+    #[test]
+    fn accepts_16_byte_response() {
+        let decoded = decode_hardware_secret(&format!("hex:{HEX_16}")).unwrap();
+        assert_eq!(decoded.as_slice(), (0u8..16).collect::<Vec<_>>().as_slice());
+    }
+
+    #[test]
+    fn rejects_raw_non_hex_response() {
+        let raw = "simulated-yubikey-response-long-enough";
+        let err = decode_hardware_secret(raw).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("Plain-text"), "{message}");
+        assert!(message.contains("hex:"), "{message}");
+        assert!(!message.contains(raw), "{message}");
+    }
+
+    #[test]
+    fn rejects_unprefixed_hex_response() {
+        let err = decode_hardware_secret(HEX_16).unwrap_err();
+        assert!(!err.to_string().contains(HEX_16));
     }
 
     #[test]
@@ -294,51 +335,74 @@ mod tests {
     }
 
     #[test]
-    fn loads_primary_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let original_primary = std::env::var("AXIOM_YUBIKEY_RESPONSE").ok();
-        let original_fallback = std::env::var("AXIOM_HARDWARE_KEY_RESPONSE").ok();
-        std::env::set_var("AXIOM_YUBIKEY_RESPONSE", "hex:616263");
-        std::env::set_var("AXIOM_HARDWARE_KEY_RESPONSE", "ignored");
-        let decoded = load_hardware_secret_from_env().unwrap();
-        assert_eq!(decoded.source_env_var(), "AXIOM_YUBIKEY_RESPONSE");
-        assert_eq!(decoded.as_slice(), b"abc");
-        restore_env("AXIOM_YUBIKEY_RESPONSE", original_primary);
-        restore_env("AXIOM_HARDWARE_KEY_RESPONSE", original_fallback);
+    fn invalid_hex_error_reports_position_without_the_character() {
+        let err = decode_hardware_secret("hex:61 6Q").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("byte position 3"), "{message}");
+        assert!(!message.contains('Q'), "{message}");
     }
 
     #[test]
-    fn loads_fallback_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let original_primary = std::env::var("AXIOM_YUBIKEY_RESPONSE").ok();
-        let original_fallback = std::env::var("AXIOM_HARDWARE_KEY_RESPONSE").ok();
-        std::env::remove_var("AXIOM_YUBIKEY_RESPONSE");
-        std::env::set_var("AXIOM_HARDWARE_KEY_RESPONSE", "hex:646566");
-        let decoded = load_hardware_secret_from_env().unwrap();
-        assert_eq!(decoded.source_env_var(), "AXIOM_HARDWARE_KEY_RESPONSE");
-        assert_eq!(decoded.as_slice(), b"def");
-        restore_env("AXIOM_YUBIKEY_RESPONSE", original_primary);
-        restore_env("AXIOM_HARDWARE_KEY_RESPONSE", original_fallback);
+    fn loader_ignores_response_environment_variables() {
+        let env_value = format!("hex:{HEX_16}");
+        let typed = "hex:ffeeddccbbaa99887766554433221100";
+        let previous: Vec<_> = ["AXIOM_YUBIKEY_RESPONSE", "AXIOM_HARDWARE_KEY_RESPONSE"]
+            .into_iter()
+            .map(|name| (name, std::env::var_os(name)))
+            .collect();
+        for (name, _) in &previous {
+            std::env::set_var(name, &env_value);
+        }
+
+        let loaded = load_hardware_response(scripted_input(&format!("{typed}\n")));
+        let empty = load_hardware_response(scripted_input("\n"));
+
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+
+        assert_eq!(
+            loaded.unwrap().as_slice(),
+            decode_hardware_secret(typed).unwrap().as_slice()
+        );
+        let message = empty.unwrap_err().to_string();
+        assert!(message.contains("cannot be empty"), "{message}");
+    }
+
+    #[test]
+    fn loader_reports_malformed_input_without_the_value() {
+        let err = load_hardware_response(scripted_input("hex:zz\n")).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("invalid hex digit"), "{message}");
+        assert!(!message.contains("zz"), "{message}");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn temp_vault_enroll_status_test_and_open_flow() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let temp_vault = TempVault::create("hardware-key-flow").await;
-        let _env = TestEnv::set(PASSWORD, Some(ENROLLED_RESPONSE), None);
+        let secret = decode_hardware_secret(ENROLLED_RESPONSE).unwrap();
 
-        cmd_enroll(temp_vault.path(), Some("desk yubikey"), Some("slot-2"))
+        enroll(
+            temp_vault.path(),
+            Some("desk yubikey"),
+            Some("slot-2"),
+            PASSWORD,
+            &secret,
+        )
+        .await
+        .unwrap();
+
+        let (config, provider) = load_local_config_and_provider(temp_vault.path())
             .await
             .unwrap();
-        cmd_status(temp_vault.path()).await.unwrap();
-        cmd_test(temp_vault.path()).await.unwrap();
-        cmd_open(temp_vault.path()).await.unwrap();
-
-        let (config, _) = load_local_config_and_provider(temp_vault.path())
-            .await
-            .unwrap();
+        verify_response(&config, &secret).unwrap();
         let public_status = format_hardware_key_status(&config, false);
         let private_status = format_hardware_key_status(&config, true);
+        open_with_response(config, provider, &secret).await.unwrap();
+
         assert_eq!(public_status, "Hardware key enrolled: yes");
         assert!(private_status.contains("Label: desk yubikey"));
         assert!(private_status.contains("Key ID: slot-2"));
@@ -347,18 +411,24 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn wrong_response_is_rejected() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let temp_vault = TempVault::create("hardware-key-wrong-response").await;
-        let _env = TestEnv::set(PASSWORD, Some(ENROLLED_RESPONSE), None);
-        cmd_enroll(temp_vault.path(), None, None).await.unwrap();
+        let secret = decode_hardware_secret(ENROLLED_RESPONSE).unwrap();
+        enroll(temp_vault.path(), None, None, PASSWORD, &secret)
+            .await
+            .unwrap();
 
-        let _env = TestEnv::set(PASSWORD, Some(WRONG_RESPONSE), None);
-        let test_err = cmd_test(temp_vault.path()).await.unwrap_err();
+        let wrong = decode_hardware_secret(WRONG_RESPONSE).unwrap();
+        let (config, provider) = load_local_config_and_provider(temp_vault.path())
+            .await
+            .unwrap();
+        let test_err = verify_response(&config, &wrong).unwrap_err();
         assert!(test_err
             .to_string()
             .contains("Hardware-key response did not verify"));
 
-        let open_err = cmd_open(temp_vault.path()).await.unwrap_err();
+        let open_err = open_with_response(config, provider, &wrong)
+            .await
+            .unwrap_err();
         assert!(open_err
             .to_string()
             .contains("Hardware-key response did not verify"));
@@ -366,93 +436,27 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn remove_disables_subsequent_test_and_open() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let temp_vault = TempVault::create("hardware-key-remove").await;
-        let _env = TestEnv::set(PASSWORD, Some(ENROLLED_RESPONSE), None);
-        cmd_enroll(temp_vault.path(), None, None).await.unwrap();
-        cmd_remove(temp_vault.path()).await.unwrap();
+        let secret = decode_hardware_secret(ENROLLED_RESPONSE).unwrap();
+        enroll(temp_vault.path(), None, None, PASSWORD, &secret)
+            .await
+            .unwrap();
+        remove(temp_vault.path(), PASSWORD).await.unwrap();
 
-        let test_err = cmd_test(temp_vault.path()).await.unwrap_err();
+        let (config, provider) = load_local_config_and_provider(temp_vault.path())
+            .await
+            .unwrap();
+        let test_err = verify_response(&config, &secret).unwrap_err();
         assert!(test_err
             .to_string()
             .contains("Failed to verify hardware key"));
 
-        let open_err = cmd_open(temp_vault.path()).await.unwrap_err();
+        let open_err = open_with_response(config, provider, &secret)
+            .await
+            .unwrap_err();
         assert!(open_err
             .to_string()
             .contains("Failed to verify hardware key"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn missing_env_is_reported() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let temp_vault = TempVault::create("hardware-key-missing-env").await;
-        let _env = TestEnv::set(PASSWORD, Some(ENROLLED_RESPONSE), None);
-        cmd_enroll(temp_vault.path(), None, None).await.unwrap();
-
-        let _env = TestEnv::set(PASSWORD, None, None);
-        let err = cmd_test(temp_vault.path()).await.unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("AXIOM_YUBIKEY_RESPONSE"));
-        assert!(message.contains("AXIOM_HARDWARE_KEY_RESPONSE"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn malformed_env_is_reported() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let temp_vault = TempVault::create("hardware-key-malformed-env").await;
-        let _env = TestEnv::set(PASSWORD, Some(ENROLLED_RESPONSE), None);
-        cmd_enroll(temp_vault.path(), None, None).await.unwrap();
-
-        let _env = TestEnv::set(PASSWORD, Some("hex:zz"), None);
-        let err = cmd_test(temp_vault.path()).await.unwrap_err();
-        let message = format!("{err:#}");
-        assert!(message.contains("Failed to decode AXIOM_YUBIKEY_RESPONSE"));
-        assert!(message.contains("invalid hex digit"));
-    }
-
-    fn restore_env(key: &str, value: Option<String>) {
-        if let Some(value) = value {
-            std::env::set_var(key, value);
-        } else {
-            std::env::remove_var(key);
-        }
-    }
-
-    struct TestEnv {
-        password: Option<String>,
-        primary: Option<String>,
-        fallback: Option<String>,
-    }
-
-    impl TestEnv {
-        fn set(password: &str, primary: Option<&str>, fallback: Option<&str>) -> Self {
-            let previous = Self {
-                password: std::env::var("AXIOM_PASSWORD").ok(),
-                primary: std::env::var("AXIOM_YUBIKEY_RESPONSE").ok(),
-                fallback: std::env::var("AXIOM_HARDWARE_KEY_RESPONSE").ok(),
-            };
-
-            std::env::set_var("AXIOM_PASSWORD", password);
-            match primary {
-                Some(value) => std::env::set_var("AXIOM_YUBIKEY_RESPONSE", value),
-                None => std::env::remove_var("AXIOM_YUBIKEY_RESPONSE"),
-            }
-            match fallback {
-                Some(value) => std::env::set_var("AXIOM_HARDWARE_KEY_RESPONSE", value),
-                None => std::env::remove_var("AXIOM_HARDWARE_KEY_RESPONSE"),
-            }
-
-            previous
-        }
-    }
-
-    impl Drop for TestEnv {
-        fn drop(&mut self) {
-            restore_env("AXIOM_PASSWORD", self.password.take());
-            restore_env("AXIOM_YUBIKEY_RESPONSE", self.primary.take());
-            restore_env("AXIOM_HARDWARE_KEY_RESPONSE", self.fallback.take());
-        }
     }
 
     struct TempVault {
@@ -483,7 +487,7 @@ mod tests {
         manager
             .create_vault(
                 VaultId::new("test-vault").unwrap(),
-                PASSWORD.as_bytes(),
+                PASSWORD,
                 "local",
                 local_provider_config(path),
                 KdfParams::interactive(),

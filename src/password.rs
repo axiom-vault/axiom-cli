@@ -1,10 +1,19 @@
 use crate::cli::KdfStrength;
 use anyhow::{Context, Result};
 use axiomvault_crypto::KdfParams;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use zeroize::{Zeroize, Zeroizing};
 
 const MIN_PASSWORD_LENGTH: usize = 8;
-const PASSWORD_ENV_VARS: [&str; 2] = ["AXIOM_PASSWORD", "AXIOMVAULT_PASSWORD"];
+
+/// Set once from the global `--password-file` flag.
+static PASSWORD_FILE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record the `--password-file` path for [`vault_password`].
+pub(crate) fn set_password_file(path: PathBuf) {
+    let _ = PASSWORD_FILE.set(path);
+}
 
 /// Validate that a password meets the minimum length requirement.
 pub(crate) fn validate_password_strength(password: &[u8]) -> Result<()> {
@@ -19,25 +28,143 @@ pub(crate) fn validate_password_strength(password: &[u8]) -> Result<()> {
 }
 
 /// Prompt for password securely.
+///
+/// The password is always read from the terminal with echo off. There is no
+/// environment-variable path: a secret in the environment is visible to child
+/// processes and, on some systems, to other users through the process table.
 pub(crate) fn prompt_password(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
-    // Allow non-interactive use via environment variable (useful for scripting/testing).
-    for env_var in PASSWORD_ENV_VARS {
-        if let Ok(mut pw) = std::env::var(env_var) {
-            if !pw.is_empty() {
-                let bytes = Zeroizing::new(pw.as_bytes().to_vec());
-                pw.zeroize();
-                return Ok(bytes);
-            }
-        }
-    }
-
-    let mut password = rpassword::prompt_password(prompt).context("Failed to read password")?;
+    let mut password = rpassword::prompt_password(prompt).context(
+        "Failed to read password from the terminal. Run the command interactively; \
+         --password-file covers only the password that opens an existing vault",
+    )?;
     let bytes = Zeroizing::new(password.as_bytes().to_vec());
     password.zeroize();
     Ok(bytes)
 }
 
+/// The password that opens an existing vault: read from `--password-file`
+/// when it was given, otherwise prompted. New passwords never come from here.
+pub(crate) fn vault_password(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
+    match PASSWORD_FILE.get() {
+        Some(path) => read_password_file(path),
+        None => prompt_password(prompt),
+    }
+}
+
+#[cfg(unix)]
+fn read_password_file(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+
+    let not_regular =
+        || anyhow::anyhow!("--password-file {} is not a regular file", path.display());
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("Failed to read --password-file {}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(not_regular());
+    }
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open --password-file {}", path.display()))?;
+    // Check the opened file again, so a swap after the first check is caught.
+    let metadata = file.metadata().context("Failed to read --password-file")?;
+    if !metadata.is_file() {
+        return Err(not_regular());
+    }
+    let capacity = usize::try_from(metadata.len())
+        .unwrap_or(0)
+        .saturating_add(1);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
+    file.read_to_end(&mut bytes)
+        .context("Failed to read --password-file")?;
+    password_from_file_bytes(bytes, metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+fn read_password_file(_path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    anyhow::bail!(
+        "--password-file is supported only on Unix, where its permissions can be checked. \
+         Omit it and enter the password at the prompt."
+    )
+}
+
+/// Validate a password file's mode and contents. Strips exactly one trailing
+/// `\n` or `\r\n` and nothing else.
+#[cfg(unix)]
+fn password_from_file_bytes(
+    mut bytes: Zeroizing<Vec<u8>>,
+    mode: u32,
+) -> Result<Zeroizing<Vec<u8>>> {
+    if mode & 0o077 != 0 {
+        anyhow::bail!(
+            "--password-file is accessible by group or others (mode {:03o}). \
+             Run `chmod 600` on it and try again.",
+            mode & 0o777
+        );
+    }
+    let strip = if bytes.ends_with(b"\r\n") {
+        2
+    } else if bytes.ends_with(b"\n") {
+        1
+    } else {
+        0
+    };
+    let len = bytes.len() - strip;
+    bytes.truncate(len);
+    if bytes.is_empty() {
+        anyhow::bail!("--password-file is empty");
+    }
+    Ok(bytes)
+}
+
+/// Allow recovery words to be printed only to an interactive terminal, so they
+/// never end up in a file, a pipe or a log.
+pub(crate) fn may_print_recovery_words(stdout_is_tty: bool) -> Result<()> {
+    if !stdout_is_tty {
+        anyhow::bail!(
+            "Refusing to print the recovery key: standard output is not a terminal. \
+             Run this command interactively, without redirecting or piping its output."
+        );
+    }
+    Ok(())
+}
+
+/// Refuse a `--recovery-out` path that already exists, so this is known before
+/// the vault is created rather than after.
+pub(crate) fn check_recovery_out(path: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(path).is_ok() {
+        anyhow::bail!(
+            "--recovery-out {} already exists; it is never overwritten",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Write recovery words, space-separated on one line, to a new file that only
+/// the owner can read. Fails if the file already exists. The words are written
+/// straight from the caller's buffer, so no unzeroized copy is made.
+pub(crate) fn write_recovery_words(path: &Path, words: &str) -> Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Failed to create --recovery-out {}", path.display()))?;
+    file.write_all(words.as_bytes())
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("Failed to write --recovery-out {}", path.display()))
+}
+
 /// Display recovery words and prompt user to confirm they've saved them.
+/// The prompt is skipped when stdin is not a terminal, where nobody could
+/// answer it and it would only hang a script, CI job or service.
 pub(crate) fn display_recovery_words(words: &str) {
     println!();
     println!("=== RECOVERY KEY ===");
@@ -53,9 +180,13 @@ pub(crate) fn display_recovery_words(words: &str) {
     println!("WARNING: This is the only time the recovery key will be shown.");
     println!("If you lose it, you will not be able to recover your vault.");
     println!();
-    print!("Press Enter after you have written down the recovery key...");
 
-    use std::io::Write;
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+
+    print!("Press Enter after you have written down the recovery key...");
     std::io::stdout().flush().ok();
 
     let mut buf = String::new();
@@ -74,47 +205,118 @@ pub(crate) fn kdf_params_from(strength: KdfStrength) -> KdfParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
+    /// Source-level check, because the prompt itself needs a terminal: the
+    /// non-test part of this module must not read any environment variable.
     #[test]
-    fn prompt_password_prefers_axiom_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let original_axiom = std::env::var("AXIOM_PASSWORD").ok();
-        let original_legacy = std::env::var("AXIOMVAULT_PASSWORD").ok();
-
-        std::env::set_var("AXIOM_PASSWORD", "new-secret");
-        std::env::set_var("AXIOMVAULT_PASSWORD", "legacy-secret");
-
-        let password = prompt_password("unused").unwrap();
-        assert_eq!(password.as_slice(), b"new-secret");
-
-        restore_env("AXIOM_PASSWORD", original_axiom);
-        restore_env("AXIOMVAULT_PASSWORD", original_legacy);
-    }
-
-    #[test]
-    fn prompt_password_falls_back_to_legacy_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let original_axiom = std::env::var("AXIOM_PASSWORD").ok();
-        let original_legacy = std::env::var("AXIOMVAULT_PASSWORD").ok();
-
-        std::env::remove_var("AXIOM_PASSWORD");
-        std::env::set_var("AXIOMVAULT_PASSWORD", "legacy-secret");
-
-        let password = prompt_password("unused").unwrap();
-        assert_eq!(password.as_slice(), b"legacy-secret");
-
-        restore_env("AXIOM_PASSWORD", original_axiom);
-        restore_env("AXIOMVAULT_PASSWORD", original_legacy);
-    }
-
-    fn restore_env(key: &str, value: Option<String>) {
-        if let Some(value) = value {
-            std::env::set_var(key, value);
-        } else {
-            std::env::remove_var(key);
+    fn password_module_reads_no_environment_variable() {
+        let source = include_str!("password.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        for needle in [
+            "std::env",
+            "env::var",
+            "var_os",
+            "AXIOM_PASSWORD",
+            "AXIOMVAULT_PASSWORD",
+        ] {
+            assert!(!production.contains(needle), "found {needle}");
         }
+    }
+
+    #[cfg(unix)]
+    fn from_file(bytes: &[u8], mode: u32) -> Result<Zeroizing<Vec<u8>>> {
+        password_from_file_bytes(Zeroizing::new(bytes.to_vec()), mode)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_file_0600_strips_one_trailing_newline() {
+        assert_eq!(
+            from_file(b"hunter22\n", 0o100600).unwrap().as_slice(),
+            b"hunter22"
+        );
+        assert_eq!(
+            from_file(b"hunter22\r\n", 0o600).unwrap().as_slice(),
+            b"hunter22"
+        );
+        assert_eq!(
+            from_file(b"hunter22\n\n", 0o600).unwrap().as_slice(),
+            b"hunter22\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_file_without_trailing_newline_is_unchanged() {
+        assert_eq!(
+            from_file(b" hunter22 ", 0o400).unwrap().as_slice(),
+            b" hunter22 "
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn password_file_0644_is_refused() {
+        let err = from_file(b"hunter22\n", 0o100644).unwrap_err().to_string();
+        assert!(err.contains("chmod 600"), "{err}");
+        assert!(err.contains("644"), "{err}");
+        assert!(!err.contains("hunter22"), "{err}");
+        assert!(from_file(b"hunter22", 0o610).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_password_file_is_refused() {
+        for bytes in [&b""[..], b"\n", b"\r\n"] {
+            let err = from_file(bytes, 0o600).unwrap_err().to_string();
+            assert!(err.contains("empty"), "{err}");
+        }
+    }
+
+    #[test]
+    fn recovery_words_refused_when_stdout_is_not_a_tty() {
+        let err = may_print_recovery_words(false).unwrap_err().to_string();
+        assert!(err.contains("not a terminal"), "{err}");
+        assert!(err.contains("interactively"), "{err}");
+    }
+
+    #[test]
+    fn recovery_words_allowed_on_a_tty() {
+        assert!(may_print_recovery_words(true).is_ok());
+    }
+
+    fn scratch_path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("axiom-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn recovery_out_writes_words_to_a_new_file() {
+        let path = scratch_path("recovery-new");
+        check_recovery_out(&path).unwrap();
+        write_recovery_words(&path, "abandon ability able").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "abandon ability able\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn recovery_out_never_overwrites_an_existing_file() {
+        let path = scratch_path("recovery-existing");
+        std::fs::write(&path, "keep me").unwrap();
+        let err = check_recovery_out(&path).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+        assert!(write_recovery_words(&path, "abandon ability able").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep me");
+        std::fs::remove_file(&path).unwrap();
     }
 }

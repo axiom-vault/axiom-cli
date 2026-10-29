@@ -1,0 +1,122 @@
+name: axiom-core compatibility
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+    branches: [main, 'release/**']
+  schedule:
+    # Weekly drift check of the default branch against axiom-core main.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Cargo.toml and Cargo.lock must pin every core crate to one commit
+  revisions:
+    name: Core revision consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Test the revision checker
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Check core revisions in Cargo.toml and Cargo.lock
+        run: python3 scripts/check_core_revisions.py Cargo.toml Cargo.lock
+
+  # Build and test exactly what a release builds: the reviewed lockfile
+  pinned:
+    name: Pinned core (Cargo.lock)
+    needs: revisions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test against the pinned revision
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Clippy against the pinned revision
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  # Build and test against the moving core branch this CLI branch integrates with.
+  # It moves independently of this repository, so on pushes and pull requests a
+  # failure reports drift without failing the run; scheduled and manual runs fail.
+  integration-head:
+    name: Core integration head (non-blocking)
+    needs: revisions
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    steps:
+      - name: Resolve the axiom-core branch
+        id: core
+        env:
+          BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          # release/X tracks axiom-core release/X; everything else tracks main.
+          case "$BRANCH" in
+            release/*) ref="$BRANCH" ;;
+            *) ref=main ;;
+          esac
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out CLI
+        uses: actions/checkout@v6
+        with:
+          path: cli
+
+      - name: Check out axiom-core
+        uses: actions/checkout@v6
+        with:
+          repository: axiom-vault/axiom-core
+          ref: ${{ steps.core.outputs.ref }}
+          path: axiom-core
+
+      - name: Record the tested core commit
+        env:
+          CORE_REF: ${{ steps.core.outputs.ref }}
+        run: |
+          head=$(git -C axiom-core rev-parse HEAD)
+          pinned=$(grep -m1 -o 'rev = "[0-9a-f]\{40\}"' cli/Cargo.toml | cut -d'"' -f2)
+          {
+            echo "## axiom-core integration head"
+            echo "- Branch: \`${CORE_REF}\` at \`${head}\`"
+            echo "- Pinned: \`${pinned}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+
+      - name: Point core crates at the checkout
+        working-directory: cli
+        run: python3 scripts/use_local_core.py ../axiom-core Cargo.toml
+
+      - name: Test against the integration head
+        working-directory: cli
+        run: cargo test --all-targets --all-features
+
+      - name: Clippy against the integration head
+        working-directory: cli
+        run: cargo clippy --all-targets --all-features -- -D warnings

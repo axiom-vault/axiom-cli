@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// KDF strength level for key derivation.
@@ -58,6 +59,12 @@ pub(crate) struct Cli {
     /// Enable verbose logging.
     #[arg(short, long)]
     pub(crate) verbose: bool,
+    /// Read the password that opens an existing vault from PATH instead of
+    /// prompting. PATH must be a regular file with no group or other
+    /// permissions (`chmod 600`); one trailing newline is stripped. Unix only.
+    /// New passwords (vault create, password change and reset) are always prompted.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(crate) password_file: Option<PathBuf>,
     #[command(subcommand)]
     pub(crate) command: Commands,
 }
@@ -109,6 +116,16 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: MountCommands,
     },
+    /// Run the key-holding agent for MCP/LLM access (serve, unlock, lock, status).
+    ///
+    /// Everything after `agent` is passed to the agent unchanged; see
+    /// `axiom agent --help`.
+    #[command(disable_help_flag = true)]
+    Agent {
+        /// Agent command and its arguments.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
     /// Generate shell completions.
     Completions {
         /// Shell to generate completions for.
@@ -124,7 +141,7 @@ pub(crate) enum Commands {
 pub(crate) enum VaultCommands {
     /// Create a new vault.
     Create {
-        /// Vault name/identifier.
+        /// Vault name. The vault ID is this name plus a random suffix.
         #[arg(short, long)]
         name: String,
         /// Path to store the vault.
@@ -133,6 +150,10 @@ pub(crate) enum VaultCommands {
         /// KDF strength level.
         #[arg(short, long, value_enum, default_value_t = KdfStrength::Moderate)]
         strength: KdfStrength,
+        /// Write the recovery key to this new file (mode 0600) instead of
+        /// printing it. An existing file is never overwritten.
+        #[arg(long, value_name = "FILE")]
+        recovery_out: Option<PathBuf>,
     },
     /// Open an existing vault and start interactive session.
     Open {
@@ -155,14 +176,19 @@ pub(crate) enum VaultCommands {
         #[arg(long)]
         shallow: bool,
     },
-    /// Migrate vault to the latest format version.
-    Migrate {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
-        /// Only show what migrations would run, without executing them.
+    /// Find vaults under a directory and show their unverified plaintext
+    /// header (id, version, provider). No password is needed: the values are
+    /// not authenticated and a crafted vault.config can show anything.
+    List {
+        /// Directory to search (repeatable).
+        #[arg(long, value_name = "DIR", required = true)]
+        root: Vec<PathBuf>,
+        /// Maximum directory depth below each root (the root is depth 0).
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        /// Print JSON instead of a tab-separated table.
         #[arg(long)]
-        dry_run: bool,
+        json: bool,
     },
 }
 
@@ -245,17 +271,11 @@ pub(crate) enum RecoveryCommands {
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Migrate a legacy vault to support recovery keys.
-    Enable {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
-    },
 }
 
 #[derive(Subcommand)]
 pub(crate) enum HardwareKeyCommands {
-    /// Enroll YubiKey challenge-response bytes for a local vault.
+    /// Enroll a YubiKey challenge-response for a local vault (prompted, hex:..., at least 16 bytes).
     Enroll {
         /// Path to the vault.
         #[arg(short, long)]
@@ -279,13 +299,13 @@ pub(crate) enum HardwareKeyCommands {
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Verify AXIOM_YUBIKEY_RESPONSE or AXIOM_HARDWARE_KEY_RESPONSE against the enrolled local vault.
+    /// Verify a prompted hardware-key response (hex:..., at least 16 bytes) against a local vault.
     Test {
         /// Path to the vault.
         #[arg(short, long)]
         path: PathBuf,
     },
-    /// Open a local vault using AXIOM_YUBIKEY_RESPONSE or AXIOM_HARDWARE_KEY_RESPONSE instead of a password.
+    /// Open a local vault with a prompted hardware-key response (hex:..., at least 16 bytes) instead of a password.
     Open {
         /// Path to the vault.
         #[arg(short, long)]
@@ -319,21 +339,21 @@ pub(crate) enum GdriveCommands {
         /// Optional custom client secret.
         #[arg(long)]
         client_secret: Option<String>,
-        /// Path to save tokens (JSON file).
+        /// Path to save tokens (JSON file) (default: `<config dir>/axiomvault/gdrive-tokens.json`).
         #[arg(short, long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
     },
     /// Create a vault on Google Drive.
     Create {
-        /// Vault name/identifier.
+        /// Vault name. The vault ID is this name plus a random suffix.
         #[arg(short, long)]
         name: String,
         /// Google Drive folder ID where vault will be stored.
         #[arg(short, long)]
         folder_id: String,
-        /// Path to tokens file.
+        /// Path to tokens file (default: `<config dir>/axiomvault/gdrive-tokens.json`).
         #[arg(short, long)]
-        tokens: PathBuf,
+        tokens: Option<PathBuf>,
         /// KDF strength level.
         #[arg(short, long, value_enum, default_value_t = KdfStrength::Moderate)]
         strength: KdfStrength,
@@ -343,9 +363,9 @@ pub(crate) enum GdriveCommands {
         /// Google Drive folder ID where vault is stored.
         #[arg(short, long)]
         folder_id: String,
-        /// Path to tokens file.
+        /// Path to tokens file (default: `<config dir>/axiomvault/gdrive-tokens.json`).
         #[arg(short, long)]
-        tokens: PathBuf,
+        tokens: Option<PathBuf>,
     },
 }
 
@@ -492,6 +512,12 @@ pub(crate) enum MountCommands {
         #[arg(long, default_value_t = 8080)]
         port: u16,
     },
+    /// List the current user's running WebDAV servers and FUSE mounts (Linux, macOS).
+    List {
+        /// Print JSON instead of a tab-separated table.
+        #[arg(long)]
+        json: bool,
+    },
     #[cfg(feature = "fuse")]
     /// Mount vault contents as a FUSE filesystem.
     Fuse {
@@ -553,7 +579,7 @@ mod tests {
                     RemoteCommands::Gdrive {
                         command: GdriveCommands::Auth { output, .. },
                     },
-            } => assert_eq!(output, PathBuf::from("tokens.json")),
+            } => assert_eq!(output, Some(PathBuf::from("tokens.json"))),
             _ => panic!("unexpected command tree"),
         }
     }
@@ -686,5 +712,73 @@ mod tests {
             } => assert_eq!(path, PathBuf::from("./vault")),
             _ => panic!("unexpected command tree"),
         }
+    }
+
+    #[test]
+    fn vault_list_requires_root() {
+        let err = Cli::try_parse_from(["axiom", "vault", "list"])
+            .err()
+            .expect("vault list without --root must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert!(err.to_string().contains("--root <DIR>"));
+    }
+
+    #[test]
+    fn parses_vault_list_and_mount_list() {
+        let cli = Cli::try_parse_from([
+            "axiom", "vault", "list", "--root", "/a", "--root", "/b", "--json",
+        ])
+        .expect("vault list should parse");
+        match cli.command {
+            Commands::Vault {
+                command: VaultCommands::List { root, depth, json },
+            } => {
+                assert_eq!(root, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+                assert_eq!(depth, 3);
+                assert!(json);
+            }
+            _ => panic!("unexpected command tree"),
+        }
+
+        let cli = Cli::try_parse_from(["axiom", "mount", "list"]).expect("mount list should parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Mount {
+                command: MountCommands::List { json: false }
+            }
+        ));
+    }
+
+    fn agent_args(argv: &[&str]) -> Vec<OsString> {
+        match Cli::try_parse_from(argv)
+            .expect("agent command should parse")
+            .command
+        {
+            Commands::Agent { args } => args,
+            _ => panic!("unexpected command tree"),
+        }
+    }
+
+    #[test]
+    fn agent_passes_arguments_through_verbatim() {
+        assert_eq!(
+            agent_args(&["axiom", "agent", "unlock", "--expect-uid", "1000"]),
+            ["unlock", "--expect-uid", "1000"]
+        );
+        assert_eq!(
+            agent_args(&["axiom", "agent", "serve", "--vault", "/v", "--allow-writes"]),
+            ["serve", "--vault", "/v", "--allow-writes"]
+        );
+        assert!(agent_args(&["axiom", "agent"]).is_empty());
+    }
+
+    #[test]
+    fn agent_help_reaches_the_agent() {
+        assert_eq!(agent_args(&["axiom", "agent", "--help"]), ["--help"]);
+        assert_eq!(agent_args(&["axiom", "agent", "-h"]), ["-h"]);
+        assert_eq!(
+            agent_args(&["axiom", "agent", "unlock", "--help"]),
+            ["unlock", "--help"]
+        );
     }
 }
