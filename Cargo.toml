@@ -42,6 +42,7 @@ default = []
 fuse = ["dep:axiomvault-fuse", "axiomvault-fuse/fuse"]
 
 [dependencies]
+axiomvault-app = { git = "https://github.com/axiom-vault/axiom-core", rev = "ebfd43d8747ef4024769f7cc2290bf6afc641025" }
 axiomvault-common = { git = "https://github.com/axiom-vault/axiom-core", rev = "ebfd43d8747ef4024769f7cc2290bf6afc641025" }
 axiomvault-crypto = { git = "https://github.com/axiom-vault/axiom-core", rev = "ebfd43d8747ef4024769f7cc2290bf6afc641025" }
 axiomvault-storage = { git = "https://github.com/axiom-vault/axiom-core", rev = "ebfd43d8747ef4024769f7cc2290bf6afc641025" }

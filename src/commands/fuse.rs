@@ -74,7 +74,7 @@ fn retry_connection(error: &anyhow::Error) -> bool {
 async fn open_source(
     source: &FuseSource,
     password: &[u8],
-) -> Result<axiomvault_vault::VaultSession> {
+) -> Result<Arc<axiomvault_vault::VaultSession>> {
     if let Some(path) = &source.path {
         VaultManager::new()
             .open_vault(
@@ -83,9 +83,10 @@ async fn open_source(
                 password,
             )
             .await
+            .map(Arc::new)
             .context("Failed to open local vault")
     } else {
-        super::gdrive::open_gdrive_vault(
+        super::gdrive::open_gdrive_from_token_file(
             source
                 .folder_id
                 .as_deref()
@@ -127,7 +128,7 @@ pub(crate) async fn cmd_mount(
     };
     drop(password);
 
-    let handle = mount::mount(Arc::new(session), mount_point, options, Handle::current())
+    let handle = mount::mount(session, mount_point, options, Handle::current())
         .context("Failed to mount vault")?;
 
     println!("Vault mounted at {}", handle.mount_point().display());

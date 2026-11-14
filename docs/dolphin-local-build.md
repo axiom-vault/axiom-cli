@@ -1,9 +1,15 @@
 # Local desktop candidate build
 
 The desktop candidate pairs this CLI branch with local axiom-core commit
-`e3109fc4487e2f34dc629729ae22ff81ac407553` on `feat/dolphin-gdrive-mount`.
-Core supplies FUSE rename, unknown-capacity and download-stall fixes. The normal CLI manifest
-still pins the public base; a default build alone does not include those fixes.
+`a65579d3ab985df45ddc92512216f10dd9f6e0f2` on `feat/dolphin-gdrive-mount`.
+Core supplies the reusable `AppService::open_gdrive_vault` entry point and the
+FUSE rename, unknown-capacity and download-stall fixes. The CLI reads its token
+file and passes a `GDriveConfig` value plus raw password bytes to the facade.
+Refresh stays in the core provider; no FFI or Android changes are included.
+
+The normal manifest still pins the public base, which lacks this new entry point.
+The local override below is required: an unpatched build of this private candidate
+does not compile until a matching core revision is published separately.
 No candidate commits were pushed.
 
 From the CLI worktree, with the paired core in `../axiom-core`:

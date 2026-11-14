@@ -208,6 +208,7 @@ version = "2.0.0-rc.3"
 dependencies = [
  "anyhow",
  "axiomvault-agent",
+ "axiomvault-app",
  "axiomvault-common",
  "axiomvault-crypto",
  "axiomvault-fuse",
