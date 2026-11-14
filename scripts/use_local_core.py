@@ -9,6 +9,7 @@ import sys
 
 CRATE_PATHS = {
     "axiomvault-agent": "core/agent",
+    "axiomvault-app": "core/app",
     "axiomvault-common": "core/common",
     "axiomvault-crypto": "core/crypto",
     "axiomvault-storage": "core/storage",
