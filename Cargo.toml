@@ -42,14 +42,14 @@ default = []
 fuse = ["dep:axiomvault-fuse", "axiomvault-fuse/fuse"]
 
 [dependencies]
-axiomvault-app = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f" }
-axiomvault-common = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f" }
-axiomvault-crypto = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f" }
-axiomvault-storage = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f" }
-axiomvault-vault = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f" }
-axiomvault-sync = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f" }
-axiomvault-webdav = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f" }
-axiomvault-fuse = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f", optional = true }
+axiomvault-app = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278" }
+axiomvault-common = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278" }
+axiomvault-crypto = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278" }
+axiomvault-storage = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278" }
+axiomvault-vault = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278" }
+axiomvault-sync = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278" }
+axiomvault-webdav = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278" }
+axiomvault-fuse = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.6", features = ["derive"] }
@@ -67,4 +67,4 @@ zeroize = { version = "1.7", features = ["derive"] }
 getrandom = "0.4"
 
 [target.'cfg(unix)'.dependencies]
-axiomvault-agent = { git = "https://github.com/axiom-vault/axiom-core", rev = "ea0f6ac2da168d454426a776fd1e7d351e53f57f" }
+axiomvault-agent = { git = "https://github.com/axiom-vault/axiom-core", rev = "168d5888f7c968a193501a785b9cca11a727b278" }
