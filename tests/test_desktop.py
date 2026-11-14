@@ -130,6 +130,19 @@ class DesktopTests(unittest.TestCase):
             self.assertIn("My edited entry", kde.read_text())
             self.assertIn("My edited entry", gtk.read_text())
 
+    def test_undo_before_private_setup_removes_only_installed_bookmarks(self):
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            mount = home / ".local/share/axiomvault/mounts/desktop"
+            kde = home / ".local/share/user-places.xbel"
+            gtk = home / ".config/gtk-3.0/bookmarks"
+            self.desktop.merge_places(kde, mount, "AxiomVault")
+            self.desktop.gtk_bookmark(gtk, mount, "AxiomVault")
+            with patch.object(Path, "home", return_value=home), patch.dict(self.desktop.os.environ, {"XDG_CONFIG_HOME": str(home / ".config")}), patch.object(self.desktop.subprocess, "run"):
+                self.desktop.remove("desktop")
+            self.assertEqual(len(minidom.parse(str(kde)).getElementsByTagName("bookmark")), 0)
+            self.assertEqual(gtk.read_bytes(), b"")
+
     def test_stale_cleanup_never_detaches_a_live_or_unrelated_mount(self):
         mount = Path("/synthetic/mount")
         for filesystem, failure, should_detach in [

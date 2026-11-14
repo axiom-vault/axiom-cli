@@ -1,8 +1,8 @@
 # Local desktop candidate build
 
 The desktop candidate pairs this CLI branch with local axiom-core commit
-`ad88261bdb786925904316a2766c42a1bcf4539f` on `feat/dolphin-gdrive-mount`.
-Core supplies the FUSE rename and download-stall fixes. The normal CLI manifest
+`e3109fc4487e2f34dc629729ae22ff81ac407553` on `feat/dolphin-gdrive-mount`.
+Core supplies FUSE rename, unknown-capacity and download-stall fixes. The normal CLI manifest
 still pins the public base; a default build alone does not include those fixes.
 No candidate commits were pushed.
 

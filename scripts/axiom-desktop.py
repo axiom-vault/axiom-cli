@@ -366,12 +366,19 @@ def recover_stale_mount(mount_point):
 
 def remove(name):
     path = profile_path(name)
-    with path.open() as stream:
-        profile = json.load(stream)
+    if path.exists():
+        with path.open() as stream:
+            profile = json.load(stream)
+    elif name == "desktop":
+        # Installation adds owned bookmarks before the human privately selects
+        # a vault. Undo must also work while that profile is still absent.
+        profile = {"mount_point": str(Path.home() / ".local/share/axiomvault/mounts/desktop")}
+    else:
+        raise RuntimeError("Desktop profile does not exist")
     subprocess.run(["systemctl", "--user", "disable", "--now", "axiom-desktop@" + name + ".service"], check=True)
     remove_place(Path(profile.get("places_file", Path.home() / ".local/share/user-places.xbel")), Path(profile["mount_point"]))
     gtk_bookmark(Path(profile.get("gtk_bookmarks_file", Path.home() / ".config/gtk-3.0/bookmarks")), Path(profile["mount_point"]), None)
-    path.unlink()
+    path.unlink(missing_ok=True)
     if profile.get("instance_dropin"):
         dropin = Path(profile["instance_dropin"])
         if dropin.read_text().startswith("# Managed by axiom-desktop for this profile only\n"):

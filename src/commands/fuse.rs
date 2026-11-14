@@ -67,10 +67,7 @@ async fn gui_password() -> Result<Zeroizing<Vec<u8>>> {
 fn retry_connection(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<axiomvault_common::Error>(),
-        Some(
-            axiomvault_common::Error::Network(_)
-                | axiomvault_common::Error::AuthenticationExpired(_)
-        )
+        Some(axiomvault_common::Error::Network(_))
     )
 }
 
@@ -183,6 +180,12 @@ mod tests {
         ));
         assert!(!super::retry_connection(
             &axiomvault_common::Error::Authentication("revoked token".into()).into()
+        ));
+        assert!(!super::retry_connection(
+            &axiomvault_common::Error::AuthenticationExpired(
+                "server rejected a timestamp-valid token".into()
+            )
+            .into()
         ));
     }
 
