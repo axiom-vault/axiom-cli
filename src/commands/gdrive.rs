@@ -288,20 +288,11 @@ pub(crate) async fn cmd_gdrive_open(
     tokens_path: Option<&Path>,
     client_id: Option<String>,
 ) -> Result<()> {
-    let tokens_path = tokens_path_or_default(tokens_path)?;
     info!("Opening vault on Google Drive");
 
     let password = vault_password("Enter password: ")?;
 
-    // Load tokens
-    let credentials = load_gdrive_credentials(&tokens_path, client_id).await?;
-
-    let (manager, provider_config) = gdrive_manager(credentials, folder_id);
-
-    let session = manager
-        .open_vault("gdrive", provider_config, &password)
-        .await
-        .context("Failed to open vault on Google Drive")?;
+    let session = open_gdrive_vault(folder_id, tokens_path, client_id, &password).await?;
 
     println!("Vault opened successfully from Google Drive!");
     println!("  ID: {}", session.vault_id());
@@ -309,6 +300,22 @@ pub(crate) async fn cmd_gdrive_open(
     println!("\nVault is ready for operations.");
 
     Ok(())
+}
+
+/// Shared by the interactive remote command and FUSE: credentials stay local.
+pub(crate) async fn open_gdrive_vault(
+    folder_id: &str,
+    tokens_path: Option<&Path>,
+    client_id: Option<String>,
+    password: &[u8],
+) -> Result<axiomvault_vault::VaultSession> {
+    let tokens_path = tokens_path_or_default(tokens_path)?;
+    let credentials = load_gdrive_credentials(&tokens_path, client_id).await?;
+    let (manager, provider_config) = gdrive_manager(credentials, folder_id);
+    manager
+        .open_vault("gdrive", provider_config, password)
+        .await
+        .context("Failed to open vault on Google Drive")
 }
 
 #[cfg(test)]

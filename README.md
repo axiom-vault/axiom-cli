@@ -192,6 +192,63 @@ On macOS, building and mounting need macFUSE.
 `axiom mount fuse` runs in the foreground until you stop it with Ctrl+C.
 To keep it running, start it with `&`, in a terminal multiplexer such as tmux, or as a systemd unit.
 
+Google Drive vaults use the existing OAuth token file and credential resolver:
+
+```bash
+axiom mount fuse --folder-id YOUR_FOLDER_ID --tokens ~/gdrive-tokens.json ~/my-vault-mount
+```
+
+Use either `--path` for a local vault or `--folder-id` for Drive. Legacy token
+files can also take `--client-id`. OAuth tokens stay in the local token file;
+they are not written into the vault configuration.
+
+On a KDE Linux desktop, `--gui-password` uses `kdialog` instead of the terminal.
+The password is kept only in memory, never in KWallet, Secret Service, arguments
+or environment variables. Cancel exits 77; permanent startup failures exit 78.
+The desktop service suppresses retries for both, avoiding repeated unlock dialogs.
+Transient connection errors during unlock retry with the entered password held
+in memory. A future login or remount requires another password prompt.
+
+The optional user-session integration requires Python 3, systemd user services,
+`fusermount3` and `kdialog`, all installed separately:
+
+```bash
+python3 scripts/axiom-desktop.py install ./target/release/axiom
+~/.local/bin/axiom-desktop setup
+```
+
+The second command is the private, human-operated step: it collects the Drive
+folder and token file location, authenticates if the file is missing, enables
+the service and opens the password dialog. Do not run it from an agent session
+against a real vault. Default mount: `~/.local/share/axiomvault/mounts/desktop`.
+It is linked from KDE Places and GTK bookmarks. A systemd user template starts
+at `graphical-session.target`, retries unexpected exits/external unmounts after
+15 seconds, and stops with the graphical session. Explicit service stop suppresses
+restart. The installer preserves the old binary as `axiom.bak`, archives any older
+backup, and records preimages/hashes under `~/.local/state/axiomvault/`.
+
+Baloo's indexing roots are checked, and mounts within those roots receive an
+explicit exclusion. A Tracker / LocalSearch `.trackerignore` marker lives outside
+the default mounts. The hidden default location avoids ordinary document indexing
+roots. These exclusions do not
+disable file-manager thumbnails: browsing with previews enabled can download and
+decrypt files and store plaintext-derived thumbnails outside the vault. Disable
+previews in the file manager when this is unwanted.
+
+To remove the desktop profile and both bookmarks without touching encrypted data:
+
+```bash
+~/.local/bin/axiom-desktop remove
+```
+
+For a full installation rollback, restore the original binary from `axiom.bak`
+and the helper/unit preimages listed in the installation manifest. Remove only
+the recorded Baloo exclusion and Tracker marker; preserve unrelated configuration.
+Direct mounts have no offline write queue or live multi-device tree synchronization.
+Failed I/O must be retried after reconnect (failed stream handles must be reopened).
+Replacing an open destination file currently returns `EBUSY`; close that handle
+before retrying an atomic save.
+
 ## CLI Reference
 
 | Command | Description |

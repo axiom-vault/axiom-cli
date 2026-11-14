@@ -200,18 +200,23 @@ pub(crate) async fn dispatch(cli: Cli) -> Result<()> {
             MountCommands::List { json } => commands::mount_list::cmd_mount_list(json),
             #[cfg(feature = "fuse")]
             MountCommands::Fuse {
-                path,
+                source,
+                gui_password,
                 mount_point,
                 allow_other,
                 read_only,
                 no_default_permissions,
             } => {
                 commands::fuse::cmd_mount(
-                    &path,
+                    &source,
                     &mount_point,
-                    allow_other,
-                    read_only,
-                    no_default_permissions,
+                    axiomvault_fuse::mount::MountOptions {
+                        allow_other,
+                        auto_unmount: allow_other,
+                        read_only,
+                        default_permissions: !no_default_permissions,
+                    },
+                    gui_password,
                 )
                 .await
             }

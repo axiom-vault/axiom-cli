@@ -541,6 +541,28 @@ pub(crate) enum RaidCommands {
     },
 }
 
+#[cfg(feature = "fuse")]
+#[derive(clap::Args)]
+pub(crate) struct FuseSource {
+    /// Local vault directory (mutually exclusive with --folder-id).
+    #[arg(
+        short,
+        long,
+        required_unless_present = "folder_id",
+        conflicts_with = "folder_id"
+    )]
+    pub(crate) path: Option<PathBuf>,
+    /// Google Drive folder containing the encrypted vault.
+    #[arg(long, required_unless_present = "path")]
+    pub(crate) folder_id: Option<String>,
+    /// OAuth token file (defaults to the existing Google Drive CLI token file).
+    #[arg(long, requires = "folder_id", conflicts_with = "path")]
+    pub(crate) tokens: Option<PathBuf>,
+    /// OAuth client ID for legacy token files without a saved client ID.
+    #[arg(long, requires = "folder_id", conflicts_with = "path")]
+    pub(crate) client_id: Option<String>,
+}
+
 #[derive(Subcommand)]
 pub(crate) enum MountCommands {
     /// Serve vault contents over WebDAV on the loopback interface.
@@ -561,9 +583,12 @@ pub(crate) enum MountCommands {
     #[cfg(feature = "fuse")]
     /// Mount vault contents as a FUSE filesystem.
     Fuse {
-        /// Path to the vault.
-        #[arg(short, long)]
-        path: PathBuf,
+        #[command(flatten)]
+        source: FuseSource,
+        /// Ask for the password with KDE's kdialog (Linux desktop only).
+        /// The password is never saved; cancellation suppresses service restart.
+        #[arg(long, conflicts_with = "password_file")]
+        gui_password: bool,
         /// Directory where the vault should be mounted.
         #[arg(value_name = "MOUNT_POINT")]
         mount_point: PathBuf,
@@ -582,6 +607,63 @@ pub(crate) enum MountCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "fuse")]
+    #[test]
+    fn fuse_accepts_local_or_gdrive_and_rejects_ambiguous_sources() {
+        for args in [
+            vec!["axiom", "mount", "fuse", "--path", "/fixture", "/mount"],
+            vec![
+                "axiom",
+                "mount",
+                "fuse",
+                "--folder-id",
+                "fixture",
+                "--tokens",
+                "/fixture-tokens",
+                "--gui-password",
+                "/mount",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?}");
+        }
+        for args in [
+            vec!["axiom", "mount", "fuse", "/mount"],
+            vec![
+                "axiom",
+                "mount",
+                "fuse",
+                "--path",
+                "/fixture",
+                "--folder-id",
+                "fixture",
+                "/mount",
+            ],
+            vec![
+                "axiom",
+                "mount",
+                "fuse",
+                "--path",
+                "/fixture",
+                "--tokens",
+                "/fixture-tokens",
+                "/mount",
+            ],
+            vec![
+                "axiom",
+                "mount",
+                "fuse",
+                "--path",
+                "/fixture",
+                "--gui-password",
+                "--password-file",
+                "/fixture-password",
+                "/mount",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
+        }
+    }
 
     #[test]
     fn parses_grouped_vault_create_command() {

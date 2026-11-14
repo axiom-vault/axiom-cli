@@ -76,7 +76,10 @@ pub(crate) fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> Option<
             vault_path = it.next();
         } else if let Some(v) = arg.strip_prefix("--path=") {
             vault_path = Some(v);
-        } else if arg == "--password-file" || arg == "--port" {
+        } else if matches!(
+            arg,
+            "--password-file" | "--port" | "--folder-id" | "--tokens" | "--client-id"
+        ) {
             it.next();
         } else if let Some(v) = arg.strip_prefix("-p").filter(|v| !v.starts_with('-')) {
             vault_path = Some(v.strip_prefix('=').unwrap_or(v));
@@ -483,6 +486,13 @@ mod tests {
         let inv = args("mount fuse -p /v --read-only /home/u/mnt").unwrap();
         assert_eq!(inv.kind, Kind::Fuse);
         assert_eq!(inv.mount_point.as_deref(), Some("/home/u/mnt"));
+    }
+
+    #[test]
+    fn gdrive_options_are_not_mistaken_for_the_mount_point() {
+        let inv = args("mount fuse --folder-id synthetic-folder --tokens /fixture/tokens --client-id synthetic-client --gui-password /fixture/mount").unwrap();
+        assert_eq!(inv.mount_point.as_deref(), Some("/fixture/mount"));
+        assert_eq!(inv.vault_path, None);
     }
 
     #[cfg(target_endian = "little")]

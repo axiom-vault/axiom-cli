@@ -29,6 +29,16 @@ fn main() -> Result<()> {
     if let Some(path) = &cli.password_file {
         password::set_password_file(path.clone());
     }
+    #[cfg(feature = "fuse")]
+    let gui_mount = matches!(
+        &cli.command,
+        Commands::Mount {
+            command: cli::MountCommands::Fuse {
+                gui_password: true,
+                ..
+            }
+        }
+    );
 
     let level = if cli.verbose {
         Level::DEBUG
@@ -43,11 +53,30 @@ fn main() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(dispatch::dispatch(cli))
-        .map_err(legacy_config_guidance)
+        .map_err(legacy_config_guidance);
+    #[cfg(feature = "fuse")]
+    if result
+        .as_ref()
+        .is_err_and(|error| error.is::<commands::fuse::GuiPasswordCancelled>())
+    {
+        // The desktop unit must not open another password dialog after Cancel.
+        eprintln!("Unlock cancelled; start the desktop service to try again");
+        std::process::exit(77);
+    }
+    #[cfg(feature = "fuse")]
+    if gui_mount {
+        if let Err(error) = &result {
+            // Wrong password, revoked credentials, or configuration errors need
+            // attention, not another dialog every time the service retries.
+            eprintln!("Desktop mount stopped: {error:#}");
+            std::process::exit(78);
+        }
+    }
+    result
 }
 
 /// Replace core's refusal of a vault config that embeds OAuth tokens with
