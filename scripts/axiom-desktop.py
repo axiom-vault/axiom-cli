@@ -72,6 +72,8 @@ def merge_places(path, mount_point, label):
         title = document.createElement("title")
         title.appendChild(document.createTextNode(label))
         bookmark.appendChild(title)
+        bookmark.setAttribute("id", "axiomvault-" + hashlib.sha256(url.encode()).hexdigest()[:16])
+        bookmark.setAttribute("axiom-original", hashlib.sha256(bookmark.toxml().encode()).hexdigest())
         document.documentElement.appendChild(bookmark)
         backup = backup_preimage(path, before)
         replace_checked(path, before, document.toxml(encoding="UTF-8"))
@@ -88,7 +90,13 @@ def remove_place(path, mount_point):
         url = mount_point.absolute().as_uri()
         for node in list(document.getElementsByTagName("bookmark")):
             if node.getAttribute("href") == url:
-                node.parentNode.removeChild(node)
+                original = node.getAttribute("axiom-original")
+                if not original:
+                    continue
+                candidate = node.cloneNode(True)
+                candidate.removeAttribute("axiom-original")
+                if hashlib.sha256(candidate.toxml().encode()).hexdigest() == original:
+                    node.parentNode.removeChild(node)
         backup_preimage(path, before)
         replace_checked(path, before, document.toxml(encoding="UTF-8"))
 
@@ -100,13 +108,28 @@ def gtk_bookmark(path, mount_point, label):
         before = snapshot(path)
         uri = mount_point.absolute().as_uri().encode()
         lines = (before or b"").splitlines(keepends=True)
+        ownership_path = path.with_name(path.name + ".axiom-ownership.json")
+        ownership_before = snapshot(ownership_path)
+        ownership = json.loads(ownership_before) if ownership_before else {}
         if label is not None and any(line.split(b" ", 1)[0].rstrip(b"\n") == uri for line in lines):
             return None
-        kept = b"".join(line for line in lines if line.split(b" ", 1)[0].rstrip(b"\n") != uri)
+        kept = before or b""
         if label is not None:
-            kept += (b"\n" if kept and not kept.endswith(b"\n") else b"") + uri + b" " + label.encode() + b"\n"
+            added = uri + b" " + label.encode() + b"\n"
+            kept += (b"\n" if kept and not kept.endswith(b"\n") else b"") + added
+            ownership[uri.decode()] = added.decode()
+        else:
+            added = ownership.pop(uri.decode(), None)
+            if added is None:
+                return None
+            # Preserve entries whose label/bytes the user changed after setup.
+            expected = added.encode()
+            if expected in lines:
+                lines.remove(expected)
+                kept = b"".join(lines)
         backup = backup_preimage(path, before)
         replace_checked(path, before, kept)
+        replace_checked(ownership_path, ownership_before, json.dumps(ownership, indent=2).encode())
         return backup
 
 
@@ -119,7 +142,7 @@ def exclude_baloo(mount_point, home):
         # Baloo prunes redundant exclusions outside its indexing roots. The
         # hidden default mount location is deliberately outside those roots.
         return None
-    config = home / ".config/baloofilerc"
+    config = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config")) / "baloofilerc"
     before = snapshot(config)
     backup = backup_preimage(config, before)
     # KConfig's own writer preserves the other configuration values.
@@ -223,7 +246,8 @@ WantedBy=graphical-session.target
 
 
 def profile_path(name):
-    return Path.home() / ".config/axiomvault/desktop-profiles" / (validate_name(name) + ".json")
+    config = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config / "axiomvault/desktop-profiles" / (validate_name(name) + ".json")
 
 
 def setup(args):
@@ -262,13 +286,32 @@ def setup(args):
     with path.open("x") as stream:
         os.chmod(path, 0o600)
         json.dump(profile, stream)
-    places = Path.home() / ".local/share/user-places.xbel"
+    places = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "user-places.xbel"
+    gtk = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "gtk-3.0/bookmarks"
+    profile["places_file"] = str(places)
+    profile["gtk_bookmarks_file"] = str(gtk)
+    # Update our exclusively created profile before touching either bookmark file.
+    profile_preimage = snapshot(path)
+    replace_checked(path, profile_preimage, json.dumps(profile).encode())
     backup = merge_places(places, mount_point, "AxiomVault" if args.name == "desktop" else "AxiomVault " + args.name)
     if backup:
         print("Places preimage backup:", backup)
-    gtk_bookmark(Path.home() / ".config/gtk-3.0/bookmarks", mount_point, "AxiomVault" if args.name == "desktop" else "AxiomVault " + args.name)
+    gtk_bookmark(gtk, mount_point, "AxiomVault" if args.name == "desktop" else "AxiomVault " + args.name)
     exclude_baloo(mount_point, Path.home())
     unit = "axiom-desktop@" + args.name + ".service"
+    config = path.parents[2]
+    if config != Path.home() / ".config":
+        # Keep fixture/custom XDG profiles available to this instance without
+        # changing the environment of any unrelated user service.
+        dropin = Path.home() / ".config/systemd/user" / (unit + ".d") / "90-axiom-profile.conf"
+        value = str(config).replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+        content = ('# Managed by axiom-desktop for this profile only\n[Service]\nEnvironment="XDG_CONFIG_HOME=' + value + '"\n').encode()
+        if dropin.exists():
+            raise RuntimeError("Instance configuration already exists; refusing to replace it")
+        replace_checked(dropin, None, content)
+        profile["instance_dropin"] = str(dropin)
+        preimage = snapshot(path)
+        replace_checked(path, preimage, json.dumps(profile).encode())
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", unit], check=True)
     if not args.no_start:
@@ -326,9 +369,15 @@ def remove(name):
     with path.open() as stream:
         profile = json.load(stream)
     subprocess.run(["systemctl", "--user", "disable", "--now", "axiom-desktop@" + name + ".service"], check=True)
-    remove_place(Path.home() / ".local/share/user-places.xbel", Path(profile["mount_point"]))
-    gtk_bookmark(Path.home() / ".config/gtk-3.0/bookmarks", Path(profile["mount_point"]), None)
+    remove_place(Path(profile.get("places_file", Path.home() / ".local/share/user-places.xbel")), Path(profile["mount_point"]))
+    gtk_bookmark(Path(profile.get("gtk_bookmarks_file", Path.home() / ".config/gtk-3.0/bookmarks")), Path(profile["mount_point"]), None)
     path.unlink()
+    if profile.get("instance_dropin"):
+        dropin = Path(profile["instance_dropin"])
+        if dropin.read_text().startswith("# Managed by axiom-desktop for this profile only\n"):
+            dropin.unlink()
+            dropin.parent.rmdir()
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     # Keep the empty mount directory, encrypted vault and token file untouched.
     print("Desktop profile removed; vault data and OAuth token file were preserved.")
 

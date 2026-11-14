@@ -102,6 +102,34 @@ class DesktopTests(unittest.TestCase):
             self.desktop.gtk_bookmark(path, mount, None)
             self.assertEqual(path.read_bytes(), before)
 
+    def test_preexisting_bookmarks_are_never_removed_as_ours(self):
+        with tempfile.TemporaryDirectory() as root:
+            mount = Path(root) / "mount"
+            kde = Path(root) / "places.xbel"
+            gtk = Path(root) / "bookmarks"
+            kde.write_text('<xbel><bookmark href="' + mount.as_uri() + '"><title>User entry</title></bookmark></xbel>')
+            gtk.write_text(mount.as_uri() + " User entry\n")
+            self.desktop.merge_places(kde, mount, "AxiomVault")
+            self.desktop.gtk_bookmark(gtk, mount, "AxiomVault")
+            self.desktop.remove_place(kde, mount)
+            self.desktop.gtk_bookmark(gtk, mount, None)
+            self.assertEqual(len(minidom.parse(str(kde)).getElementsByTagName("bookmark")), 1)
+            self.assertEqual(gtk.read_text(), mount.as_uri() + " User entry\n")
+
+    def test_user_edited_owned_bookmarks_are_preserved_on_removal(self):
+        with tempfile.TemporaryDirectory() as root:
+            mount = Path(root) / "mount"
+            kde = Path(root) / "places.xbel"
+            gtk = Path(root) / "bookmarks"
+            self.desktop.merge_places(kde, mount, "AxiomVault")
+            self.desktop.gtk_bookmark(gtk, mount, "AxiomVault")
+            kde.write_text(kde.read_text().replace("<title>AxiomVault</title>", "<title>My edited entry</title>"))
+            gtk.write_text(gtk.read_text().replace(" AxiomVault\n", " My edited entry\n"))
+            self.desktop.remove_place(kde, mount)
+            self.desktop.gtk_bookmark(gtk, mount, None)
+            self.assertIn("My edited entry", kde.read_text())
+            self.assertIn("My edited entry", gtk.read_text())
+
     def test_stale_cleanup_never_detaches_a_live_or_unrelated_mount(self):
         mount = Path("/synthetic/mount")
         for filesystem, failure, should_detach in [
