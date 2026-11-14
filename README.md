@@ -221,6 +221,25 @@ The second command is the private, human-operated step: it collects the Drive
 folder and token file location, authenticates if the file is missing, enables
 the service and opens the password dialog. Do not run it from an agent session
 against a real vault. Default mount: `~/.local/share/axiomvault/mounts/desktop`.
+Use the folder ID after `/folders/` in its Google Drive URL, not its display name.
+Setup rejects obvious names and malformed ID-shaped input; Google still validates
+the actual folder during opening.
+
+When authentication is needed, `--client-id` takes priority over environment
+client IDs. `AXIOM_GOOGLE_CLIENT_ID` / `AXIOM_GOOGLE_CLIENT_SECRET` and the legacy
+`AXIOMVAULT_GOOGLE_CLIENT_ID` / `AXIOMVAULT_GOOGLE_CLIENT_SECRET` are supported.
+You can instead supply Google's downloaded desktop client JSON:
+
+```bash
+~/.local/bin/axiom-desktop setup --client-json ~/client_secret.json
+```
+
+Only its `installed` block is accepted. Explicit JSON values take priority over
+environment values; a conflicting `--client-id` is refused. Only missing values
+are prompted for, with secret input hidden. The secret is passed to the auth
+child through its environment, never command arguments or the desktop profile.
+Existing token files are left untouched by this setup authentication step.
+
 It is linked from KDE Places and GTK bookmarks. A systemd user template starts
 at `graphical-session.target`, retries unexpected exits/external unmounts after
 15 seconds, and stops with the graphical session. Explicit service stop suppresses

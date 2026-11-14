@@ -3,6 +3,7 @@
 import argparse
 import errno
 import fcntl
+import getpass
 import hashlib
 import json
 import os
@@ -250,6 +251,51 @@ def profile_path(name):
     return config / "axiomvault/desktop-profiles" / (validate_name(name) + ".json")
 
 
+def validate_folder_id(value):
+    value = value.strip()
+    # Drive IDs are opaque. Reject obvious names/paths, not remote existence.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,}", value):
+        raise ValueError("Expected a Google Drive folder ID (the part after /folders/ in the Drive URL), not a folder name")
+    return value
+
+
+def google_oauth_client(args):
+    installed = {}
+    if args.client_json:
+        try:
+            document = json.loads(Path(args.client_json).expanduser().read_text())
+        except (ValueError, UnicodeError):
+            raise ValueError("Invalid Google client JSON; expected an installed desktop client") from None
+        installed = document.get("installed") if isinstance(document, dict) else None
+        if not isinstance(installed, dict) or not isinstance(installed.get("client_id"), str) or not installed["client_id"].strip():
+            raise ValueError("Google client JSON must contain an installed block with a client_id")
+        if installed.get("client_secret") is not None and not isinstance(installed["client_secret"], str):
+            raise ValueError("Google installed client_secret must be a string")
+        if args.client_id and args.client_id.strip() != installed["client_id"].strip():
+            raise ValueError("--client-id conflicts with the installed client JSON")
+    client_id = next((value.strip() for value in [args.client_id, installed.get("client_id"), os.environ.get("AXIOM_GOOGLE_CLIENT_ID"), os.environ.get("AXIOMVAULT_GOOGLE_CLIENT_ID")] if value and value.strip()), None)
+    client_secret = next((value for value in [installed.get("client_secret"), os.environ.get("AXIOM_GOOGLE_CLIENT_SECRET"), os.environ.get("AXIOMVAULT_GOOGLE_CLIENT_SECRET")] if value and value.strip()), None)
+    if not client_id:
+        client_id = input("Google OAuth desktop client ID (for authentication): ").strip()
+    if not client_id:
+        raise ValueError("Client ID is required to authenticate")
+    if not client_secret:
+        client_secret = getpass.getpass("Google OAuth client secret (leave empty for a public PKCE client): ") or None
+    return client_id, client_secret
+
+
+def authenticate_gdrive(args, tokens):
+    client_id, client_secret = google_oauth_client(args)
+    environment = dict(os.environ)
+    if client_secret:
+        environment["AXIOM_GOOGLE_CLIENT_SECRET"] = client_secret
+    else:
+        environment.pop("AXIOM_GOOGLE_CLIENT_SECRET", None)
+        environment.pop("AXIOMVAULT_GOOGLE_CLIENT_SECRET", None)
+    tokens.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([str(Path.home() / ".local/bin/axiom"), "remote", "gdrive", "auth", "--client-id", client_id, "--output", str(tokens)], env=environment, check=True)
+
+
 def setup(args):
     path = profile_path(args.name)
     if path.exists() or path.is_symlink():
@@ -267,17 +313,11 @@ def setup(args):
     else:
         if args.password_file:
             raise ValueError("Desktop Google Drive profiles never persist a password-file reference")
-        folder = args.folder_id or input("Google Drive vault folder ID: ").strip()
-        if not folder:
-            raise ValueError("Folder ID is required")
+        folder = validate_folder_id(args.folder_id or input("Google Drive vault folder ID (the part after /folders/ in the Drive URL): "))
         default_tokens = Path.home() / ".config/axiomvault/gdrive-tokens.json"
         tokens = Path(args.tokens or input(f"OAuth token file [{default_tokens}]: ").strip() or default_tokens).expanduser().absolute()
         if not tokens.is_file():
-            client_id = input("Google OAuth desktop client ID (for authentication): ").strip()
-            if not client_id:
-                raise ValueError("Client ID is required to authenticate")
-            tokens.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run([str(Path.home() / ".local/bin/axiom"), "remote", "gdrive", "auth", "--client-id", client_id, "--output", str(tokens)], check=True)
+            authenticate_gdrive(args, tokens)
         profile.update(folder_id=folder, tokens=str(tokens))
         if args.client_id:
             profile["client_id"] = args.client_id
@@ -399,6 +439,7 @@ def main():
     source.add_argument("--local-path")
     configure.add_argument("--tokens")
     configure.add_argument("--client-id")
+    configure.add_argument("--client-json", type=Path, help="Google desktop OAuth JSON containing an installed block, used when authentication is needed")
     configure.add_argument("--mount-point")
     configure.add_argument("--password-file", help="Local fixture profiles only")
     configure.add_argument("--no-start", action="store_true")

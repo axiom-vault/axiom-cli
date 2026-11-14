@@ -2,7 +2,7 @@
 
 Goal: ordinary Dolphin read/write access to a Google Drive vault using FUSE,
 started by the user session and recoverable after transient provider failure.
-Spec: complete owner brief in /home/christian/.openrig/shared-docs/briefs/axiom-dolphin-mount.md.
+Spec: README.md Google Drive, FUSE mount and desktop integration behavior.
 Execution and sensible defaults are preapproved; lead writes CLI, core partner owns core,
 independent review checks exact heads, installation and fixture effects.
 

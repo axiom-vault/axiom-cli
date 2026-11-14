@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import errno
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from xml.dom import minidom
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "axiom-desktop.py"
@@ -16,6 +18,76 @@ class DesktopTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("desktop", SCRIPT)
         cls.desktop = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.desktop)
+
+    def test_oauth_uses_explicit_id_and_primary_or_legacy_environment_before_prompt(self):
+        cases = [
+            ("flag-client", {"AXIOM_GOOGLE_CLIENT_ID": "primary-client", "AXIOMVAULT_GOOGLE_CLIENT_ID": "legacy-client", "AXIOM_GOOGLE_CLIENT_SECRET": "primary-secret", "AXIOMVAULT_GOOGLE_CLIENT_SECRET": "legacy-secret"}, ("flag-client", "primary-secret")),
+            (None, {"AXIOM_GOOGLE_CLIENT_ID": "primary-client", "AXIOMVAULT_GOOGLE_CLIENT_ID": "legacy-client", "AXIOM_GOOGLE_CLIENT_SECRET": "primary-secret"}, ("primary-client", "primary-secret")),
+            (None, {"AXIOMVAULT_GOOGLE_CLIENT_ID": "legacy-client", "AXIOMVAULT_GOOGLE_CLIENT_SECRET": "legacy-secret"}, ("legacy-client", "legacy-secret")),
+        ]
+        for flag, environment, expected in cases:
+            args = SimpleNamespace(client_id=flag, client_json=None)
+            with self.subTest(flag=flag), patch.dict(self.desktop.os.environ, environment, clear=True), patch("builtins.input", side_effect=AssertionError("unexpected ID prompt")), patch("getpass.getpass", side_effect=AssertionError("unexpected secret prompt")):
+                self.assertEqual(self.desktop.google_oauth_client(args), expected)
+
+    def test_installed_client_json_supplies_child_secret_without_secret_argv(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "synthetic-client.json"
+            path.write_text(json.dumps({"installed": {"client_id": "json-client", "client_secret": "json-secret"}}))
+            args = SimpleNamespace(client_id=None, client_json=path)
+            tokens = Path(root) / "tokens.json"
+            with patch.dict(self.desktop.os.environ, {"AXIOM_GOOGLE_CLIENT_ID": "env-client", "AXIOM_GOOGLE_CLIENT_SECRET": "env-secret"}, clear=True), patch("builtins.input", side_effect=AssertionError("unexpected ID prompt")), patch("getpass.getpass", side_effect=AssertionError("unexpected secret prompt")), patch.object(self.desktop.subprocess, "run") as run:
+                self.desktop.authenticate_gdrive(args, tokens)
+            command = run.call_args.args[0]
+            self.assertEqual(command[-4:], ["--client-id", "json-client", "--output", str(tokens)])
+            self.assertNotIn("json-secret", command)
+            self.assertEqual(run.call_args.kwargs["env"]["AXIOM_GOOGLE_CLIENT_SECRET"], "json-secret")
+
+    def test_oauth_prompts_only_for_missing_values_and_allows_public_client(self):
+        args = SimpleNamespace(client_id=None, client_json=None)
+        with patch.dict(self.desktop.os.environ, {}, clear=True), patch("builtins.input", return_value="prompt-client") as prompt, patch("getpass.getpass", return_value="") as secret_prompt:
+            self.assertEqual(self.desktop.google_oauth_client(args), ("prompt-client", None))
+        prompt.assert_called_once()
+        secret_prompt.assert_called_once()
+
+    def test_conflicting_explicit_client_and_json_are_not_silently_mixed(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "synthetic-client.json"
+            path.write_text(json.dumps({"installed": {"client_id": "json-client", "client_secret": "hidden-fixture-secret"}}))
+            args = SimpleNamespace(client_id="different-client", client_json=path)
+            with patch.dict(self.desktop.os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "conflicts") as raised:
+                self.desktop.google_oauth_client(args)
+            self.assertNotIn("hidden-fixture-secret", str(raised.exception))
+
+    def test_client_json_rejects_web_or_malformed_data_without_echoing_contents(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "synthetic-client.json"
+            for content in ['{"web":{"client_secret":"hidden-fixture-secret"}}', '{"installed":{"client_id":7,"client_secret":"hidden-fixture-secret"}}', '{"installed": "hidden-fixture-secret"', '["hidden-fixture-secret"]']:
+                path.write_text(content)
+                args = SimpleNamespace(client_id=None, client_json=path)
+                with patch.dict(self.desktop.os.environ, {}, clear=True), self.assertRaises(ValueError) as raised:
+                    self.desktop.google_oauth_client(args)
+                self.assertNotIn("hidden-fixture-secret", str(raised.exception))
+
+    def test_folder_validation_rejects_names_and_explains_drive_url_component(self):
+        for value in ["AxiomVault", "", "Axiom Vault", "name/child", "https://drive.google.com/drive/folders/fixture"]:
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "/folders/"):
+                self.desktop.validate_folder_id(value)
+        self.assertEqual(self.desktop.validate_folder_id("  1Synthetic_Folder-ID_1234567890  "), "1Synthetic_Folder-ID_1234567890")
+
+    def test_missing_token_setup_keeps_supplied_client_and_uses_specific_folder_prompt(self):
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            args = SimpleNamespace(name="fixture", mount_point=str(home / "mount"), local_path=None, password_file=None, folder_id=None, tokens=str(home / "tokens.json"), client_id="flag-client", client_json=None, no_start=True)
+            environment = {"XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local/share"), "AXIOMVAULT_GOOGLE_CLIENT_SECRET": "fixture-secret"}
+            with patch.object(Path, "home", return_value=home), patch.dict(self.desktop.os.environ, environment, clear=True), patch("builtins.input", return_value="1Synthetic_Folder-ID_1234567890") as prompt, patch("getpass.getpass", side_effect=AssertionError("unexpected secret prompt")), patch.object(self.desktop.subprocess, "run") as run, patch.object(self.desktop, "exclude_baloo"):
+                self.desktop.setup(args)
+            prompt.assert_called_once_with("Google Drive vault folder ID (the part after /folders/ in the Drive URL): ")
+            auth = next(call for call in run.call_args_list if "auth" in call.args[0])
+            self.assertIn("flag-client", auth.args[0])
+            self.assertEqual(auth.kwargs["env"]["AXIOM_GOOGLE_CLIENT_SECRET"], "fixture-secret")
+            profile = (home / ".config/axiomvault/desktop-profiles/fixture.json").read_text()
+            self.assertNotIn("fixture-secret", profile)
 
     def test_places_preserves_existing_nodes_and_backs_up_exact_preimage(self):
         with tempfile.TemporaryDirectory() as root:
