@@ -16,6 +16,7 @@ REVISION = re.compile(r'\brev\s*=\s*"([0-9a-f]{40})"')
 CORE_SOURCE = "git+https://github.com/axiom-vault/axiom-core"
 EXPECTED_CORE_CRATES = {
     "axiomvault-agent",
+    "axiomvault-app",
     "axiomvault-common",
     "axiomvault-crypto",
     "axiomvault-storage",

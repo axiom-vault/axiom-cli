@@ -10,6 +10,7 @@ use crate::password::{
     validate_password_strength, vault_password,
 };
 use anyhow::{Context, Result};
+use axiomvault_app::AppService;
 use axiomvault_common::{VaultId, VaultPath};
 use axiomvault_crypto::recovery::RecoveryKey;
 use axiomvault_crypto::KdfParams;
@@ -288,20 +289,11 @@ pub(crate) async fn cmd_gdrive_open(
     tokens_path: Option<&Path>,
     client_id: Option<String>,
 ) -> Result<()> {
-    let tokens_path = tokens_path_or_default(tokens_path)?;
     info!("Opening vault on Google Drive");
 
     let password = vault_password("Enter password: ")?;
 
-    // Load tokens
-    let credentials = load_gdrive_credentials(&tokens_path, client_id).await?;
-
-    let (manager, provider_config) = gdrive_manager(credentials, folder_id);
-
-    let session = manager
-        .open_vault("gdrive", provider_config, &password)
-        .await
-        .context("Failed to open vault on Google Drive")?;
+    let session = open_gdrive_from_token_file(folder_id, tokens_path, client_id, &password).await?;
 
     println!("Vault opened successfully from Google Drive!");
     println!("  ID: {}", session.vault_id());
@@ -309,6 +301,28 @@ pub(crate) async fn cmd_gdrive_open(
     println!("\nVault is ready for operations.");
 
     Ok(())
+}
+
+/// CLI-only token-file adapter; provider opening and refresh belong to core.
+pub(crate) async fn open_gdrive_from_token_file(
+    folder_id: &str,
+    tokens_path: Option<&Path>,
+    client_id: Option<String>,
+    password: &[u8],
+) -> Result<Arc<axiomvault_vault::VaultSession>> {
+    let tokens_path = tokens_path_or_default(tokens_path)?;
+    let credentials = load_gdrive_credentials(&tokens_path, client_id).await?;
+    AppService::new()
+        .open_gdrive_vault(
+            GDriveConfig {
+                folder_id: folder_id.to_owned(),
+                tokens: credentials.tokens,
+                auth_config: Some(credentials.auth_config),
+            },
+            password,
+        )
+        .await
+        .context("Failed to open vault on Google Drive")
 }
 
 #[cfg(test)]

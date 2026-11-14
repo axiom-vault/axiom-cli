@@ -106,6 +106,15 @@ axiomvault-agent = {{ git = "https://github.com/axiom-vault/axiom-core", rev = "
     def test_maps_every_expected_core_crate_to_a_local_path(self):
         self.assertEqual(set(local_core.CRATE_PATHS), module.EXPECTED_CORE_CRATES)
 
+    def test_rewrites_app_facade_dependency_for_integration_ci(self):
+        rewritten = local_core.rewrite_manifest(
+            dependency("axiomvault-app"), pathlib.Path("../axiom-core")
+        )
+        self.assertEqual(
+            rewritten,
+            'axiomvault-app = { path = "../axiom-core/core/app" }',
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
