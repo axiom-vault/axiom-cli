@@ -1,43 +1,34 @@
-# Local desktop candidate build
+# Desktop build and core integration
 
-The desktop candidate pairs this CLI branch with local axiom-core commit
-`a65579d3ab985df45ddc92512216f10dd9f6e0f2` on `feat/dolphin-gdrive-mount`.
-Core supplies the reusable `AppService::open_gdrive_vault` entry point and the
-FUSE rename, unknown-capacity and download-stall fixes. The CLI reads its token
-file and passes a `GDriveConfig` value plus raw password bytes to the facade.
-Refresh stays in the core provider; no FFI or Android changes are included.
+`Cargo.toml` and `Cargo.lock` pin every core crate to the same published core
+revision. Normal builds require no local core override. Core includes the shared
+`AppService::open_gdrive_vault` value-based entry point and the FUSE rename,
+unknown-capacity and download read-stall fixes. CLI owns token-file loading;
+refresh remains in core. This work does not add FFI or Android code.
 
-The normal manifest still pins the public base, which lacks this new entry point.
-The local override below is required: an unpatched build of this private candidate
-does not compile until a matching core revision is published separately.
-No candidate commits were pushed.
+From the CLI repository root:
 
-From the CLI worktree, with the paired core in `../axiom-core`:
-
-```bash
-mkdir -p .build-tmp target
-python3 - <<'PY' > .build-tmp/local-core.toml
-from pathlib import Path
-import json, tomllib
-core = Path('../axiom-core').resolve()
-print('[patch."https://github.com/axiom-vault/axiom-core"]')
-for manifest in sorted((core / 'core').glob('*/Cargo.toml')):
-    name = tomllib.loads(manifest.read_text())['package']['name']
-    print(name + ' = { path = ' + json.dumps(str(manifest.parent)) + ' }')
-PY
-env TMPDIR="$PWD/.build-tmp" CARGO_TARGET_DIR="$PWD/target" \
-  lessor hold build --need cores=4 --wait 600 -- \
-  cargo --config .build-tmp/local-core.toml build --release --features fuse --bin axiom
+```sh
+cargo build --locked --release
+cargo build --locked --release --features fuse --bin axiom
+cargo test --locked --all-targets
+cargo test --locked --all-targets --features fuse
+cargo clippy --locked --all-targets --all-features -- -D warnings
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 scripts/check_core_revisions.py Cargo.toml Cargo.lock
 ```
 
-Use the same override for `cargo test` and `cargo check`. For the external Clippy
-subcommand, pass it **after** `clippy` so its child Cargo invocation receives it:
-`cargo clippy --config .build-tmp/local-core.toml --features fuse --all-targets`.
-The paired core has four pre-existing `needless_range_loop` warnings in unchanged
-composite code. The verified candidate uses `-- -D warnings -A clippy::needless_range_loop`;
-there is no source suppression. Baseline CLI strict Clippy also passed.
+The FUSE-enabled binary is `target/release/axiom`. Linux mounting requires
+`fusermount3`; macOS requires macFUSE. Validation of a mount or cloud provider uses
+synthetic fixtures, never a person's real vault or credentials.
 
-The local override changes Cargo.lock to path sources. Keep a copy with build
-evidence, then restore the public lockfile before committing this CLI branch.
-Check `cargo --config .build-tmp/local-core.toml metadata --features fuse` to verify
-that every axiomvault package resolves to the intended candidate worktrees.
+When intentionally testing an unreleased core checkout, the compatibility CI
+uses `python3 scripts/use_local_core.py ../axiom-core Cargo.toml`. This rewrites
+Git dependencies to the checkout paths and changes dependency resolution.
+Record the exact core commit tested, keep those temporary rewrites out of release
+commits, and run the pinned checks again before release. A passing test against a
+local checkout is not proof that the published Git pins resolve correctly.
+
+If using an explicit Cargo override instead, give external `cargo-clippy` its
+`--config` argument after `clippy` so the child Cargo invocation receives it.
+The normal commands above use the published pin and no override or lint allowance.
