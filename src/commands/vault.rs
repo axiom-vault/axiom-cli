@@ -19,6 +19,8 @@ use axiomvault_vault::{
     check_migration_needed, check_vault_health, check_vault_structure, MigrationRegistry,
     MigrationStatus, VaultConfig, VaultManager, VaultOperations, VaultVersion,
 };
+#[cfg(unix)]
+use rustix::fs::Mode;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -41,6 +43,58 @@ fn escape_controls(s: &str) -> String {
 fn escape_path(path: &Path) -> String {
     escape_controls(&path.to_string_lossy())
 }
+
+/// Escape a `VaultPath` for display in error messages.
+fn escape_vault_path(path: &VaultPath) -> String {
+    escape_controls(&path.to_string())
+}
+
+/// Escape a source-derived name before it appears in an error message.
+fn escape_name(name: &str) -> String {
+    escape_controls(name)
+}
+
+/// Escape the text of a core error so that any untrusted vault path it
+/// contains cannot restyle the terminal. The original error type is
+/// discarded because the CLI only needs a printable, escaped message.
+fn escape_core_error(error: axiomvault_common::Error) -> anyhow::Error {
+    anyhow::anyhow!("{}", escape_controls(&error.to_string()))
+}
+
+/// One entry collected from the source tree. On Unix the file handle is
+/// opened relative to its parent directory with `O_NOFOLLOW | O_NONBLOCK`,
+/// so directory swaps, intermediate symlink components, and FIFO swaps are
+/// caught at open time. On other platforms the handle is absent and the
+/// path is reopened later.
+struct CollectedEntry {
+    abs_path: PathBuf,
+    rel_path: PathBuf,
+    is_dir: bool,
+    /// Opened file and its plaintext size. Only present for regular files
+    /// on platforms where we can open without following symlinks.
+    file: Option<(std::fs::File, u64)>,
+}
+
+impl CollectedEntry {
+    fn dir(abs_path: PathBuf, rel_path: PathBuf) -> Self {
+        Self {
+            abs_path,
+            rel_path,
+            is_dir: true,
+            file: None,
+        }
+    }
+
+    fn file(abs_path: PathBuf, rel_path: PathBuf, file: std::fs::File, size: u64) -> Self {
+        Self {
+            abs_path,
+            rel_path,
+            is_dir: false,
+            file: Some((file, size)),
+        }
+    }
+}
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tracing::info;
@@ -230,13 +284,13 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
                 format!(
                     "Failed to add directory {} to {}",
                     escape_path(source),
-                    dest_path
+                    escape_vault_path(&dest_path)
                 )
             })?;
         println!(
             "Directory added successfully: {} -> {}",
             escape_path(source),
-            dest_path
+            escape_vault_path(&dest_path)
         );
     } else {
         add_file_checked(&ops, &dest_path, source)
@@ -267,100 +321,32 @@ async fn add_file_checked(
         Ok((_, true, _)) => {
             anyhow::bail!(
                 "Cannot add file {}: a directory already exists there",
-                vault_path
+                escape_vault_path(vault_path)
             )
         }
         Ok((_, false, _)) => {
-            anyhow::bail!("Cannot add file {}: already exists in vault", vault_path)
-        }
-        Err(axiomvault_common::Error::NotFound(_)) => {
-            ops.create_file_from_path(vault_path, source).await?;
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// Import one file from a directory tree. The source file is opened with
-/// O_NOFOLLOW so a symlink or special-file swap between walk-time
-/// classification and open-time cannot be traversed. Core's no-overwrite
-/// guard still applies.
-async fn add_directory_file_checked(
-    ops: &VaultOperations<'_>,
-    vault_path: &VaultPath,
-    source: &Path,
-) -> Result<()> {
-    match ops.metadata(vault_path).await {
-        Ok((_, true, _)) => {
             anyhow::bail!(
-                "Cannot add file {}: a directory already exists there",
-                vault_path
+                "Cannot add file {}: already exists in vault",
+                escape_vault_path(vault_path)
             )
-        }
-        Ok((_, false, _)) => {
-            anyhow::bail!("Cannot add file {}: already exists in vault", vault_path)
         }
         Err(axiomvault_common::Error::NotFound(_)) => {
-            let (file, size) = open_file_nofollow(source)
-                .with_context(|| format!("Failed to open {}", escape_path(source)))?;
-            ops.create_file_from_reader(vault_path, file, Some(size))
-                .await?;
+            ops.create_file_from_path(vault_path, source)
+                .await
+                .map_err(escape_core_error)?;
             Ok(())
         }
-        Err(error) => Err(error.into()),
+        Err(error) => Err(escape_core_error(error)),
     }
-}
-
-/// Open a regular file without following symlinks. On Unix this uses
-/// O_NOFOLLOW; on other platforms it falls back to opening and verifying the
-/// file type.
-#[cfg(unix)]
-fn open_file_nofollow(path: &Path) -> Result<(std::fs::File, u64)> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .with_context(|| {
-            format!(
-                "Failed to open {} without following symlinks",
-                escape_path(path)
-            )
-        })?;
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("Failed to inspect {}", escape_path(path)))?;
-    if !metadata.is_file() {
-        anyhow::bail!("{} is not a regular file", escape_path(path));
-    }
-    Ok((file, metadata.len()))
-}
-
-#[cfg(not(unix))]
-fn open_file_nofollow(path: &Path) -> Result<(std::fs::File, u64)> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("Failed to open {}", escape_path(path)))?;
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("Failed to inspect {}", escape_path(path)))?;
-    if !metadata.is_file() {
-        anyhow::bail!("{} is not a regular file", escape_path(path));
-    }
-    Ok((file, metadata.len()))
 }
 
 /// Report why a vault path cannot be imported, escaping any untrusted name.
 fn vault_conflict_error(vault_path: &VaultPath, wanted_dir: bool) -> String {
+    let path = escape_vault_path(vault_path);
     if wanted_dir {
-        format!(
-            "Cannot create directory {}: a file already exists there",
-            vault_path
-        )
+        format!("Cannot create directory {path}: a file already exists there")
     } else {
-        format!(
-            "Cannot add file {}: a directory already exists there",
-            vault_path
-        )
+        format!("Cannot add file {path}: a directory already exists there")
     }
 }
 
@@ -374,31 +360,37 @@ async fn add_directory_tree(
     source: &Path,
     dest: &VaultPath,
 ) -> Result<()> {
-    // Collect the source tree first. This validates every relative path and
-    // every file type before the first vault mutation.
+    // Collect the source tree first. On Unix this opens each directory with
+    // O_NOFOLLOW | O_DIRECTORY relative to its parent and each regular file
+    // with O_NOFOLLOW | O_NONBLOCK relative to its directory, so directory
+    // swaps, intermediate symlink components, and FIFO swaps are caught at
+    // open time rather than followed or blocking.
     let entries = collect_directory_entries(source).await?;
 
     // Build and validate the vault destination for every entry.
     let mut plans = Vec::with_capacity(entries.len());
-    for (src_path, rel_path, is_dir) in &entries {
-        let vault_path = vault_path_for_relative(dest, rel_path).with_context(|| {
+    for entry in &entries {
+        let vault_path = vault_path_for_relative(dest, &entry.rel_path).with_context(|| {
             format!(
                 "Invalid relative path {} under {}",
-                escape_path(rel_path),
+                escape_path(&entry.rel_path),
                 escape_path(source)
             )
         })?;
-        plans.push((src_path.clone(), rel_path.clone(), *is_dir, vault_path));
+        plans.push((entry, vault_path));
     }
 
     // Preflight vault conflicts: fail before creating the destination or
     // importing any file, so the tree is never left half-written by a
     // representability or conflict error.
-    for (_, _, is_dir, vault_path) in &plans {
+    for (entry, vault_path) in &plans {
         match ops.metadata(vault_path).await {
-            Ok((_, true, _)) if *is_dir => {}
-            Ok((_, false, _)) if !is_dir => {
-                anyhow::bail!("Cannot add file {}: already exists in vault", vault_path)
+            Ok((_, true, _)) if entry.is_dir => {}
+            Ok((_, false, _)) if !entry.is_dir => {
+                anyhow::bail!(
+                    "Cannot add file {}: already exists in vault",
+                    escape_vault_path(vault_path)
+                )
             }
             Ok((_, true, _)) => {
                 anyhow::bail!("{}", vault_conflict_error(vault_path, false))
@@ -407,18 +399,18 @@ async fn add_directory_tree(
                 anyhow::bail!("{}", vault_conflict_error(vault_path, true))
             }
             Err(axiomvault_common::Error::NotFound(_)) => {}
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(escape_core_error(error)),
         }
     }
 
     // Only after preflight succeeds do we touch the vault.
     ensure_vault_directory(ops, dest).await?;
 
-    for (src_path, _rel_path, is_dir, vault_path) in plans {
-        if is_dir {
+    for (entry, vault_path) in plans {
+        if entry.is_dir {
             ensure_vault_directory(ops, &vault_path).await?;
         } else {
-            add_directory_file_checked(ops, &vault_path, &src_path).await?;
+            add_directory_file_checked(ops, &vault_path, entry).await?;
         }
     }
 
@@ -431,21 +423,204 @@ async fn ensure_vault_directory(ops: &VaultOperations<'_>, path: &VaultPath) -> 
     match ops.metadata(path).await {
         Ok((_, true, _)) => Ok(()),
         Ok((_, false, _)) => {
-            anyhow::bail!("Destination path {} already exists as a file", path)
+            anyhow::bail!(
+                "Destination path {} already exists as a file",
+                escape_vault_path(path)
+            )
         }
         Err(axiomvault_common::Error::NotFound(_)) => {
-            ops.create_directory(path).await?;
+            ops.create_directory(path)
+                .await
+                .map_err(escape_core_error)?;
             Ok(())
         }
-        Err(error) => Err(error.into()),
+        Err(error) => Err(escape_core_error(error)),
     }
 }
 
-/// Walk a local directory tree and return every entry as
-/// (absolute source path, path relative to source root, is_directory).
-/// Entries are sorted by file name within each directory and the returned
-/// vector is sorted by relative path for deterministic processing order.
-async fn collect_directory_entries(root: &Path) -> Result<Vec<(PathBuf, PathBuf, bool)>> {
+/// Import one file from a directory tree. The file handle was opened by the
+/// collector without following symlinks and is verified to be a regular file.
+async fn add_directory_file_checked(
+    ops: &VaultOperations<'_>,
+    vault_path: &VaultPath,
+    entry: &CollectedEntry,
+) -> Result<()> {
+    match ops.metadata(vault_path).await {
+        Ok((_, true, _)) => {
+            anyhow::bail!(
+                "Cannot add file {}: a directory already exists there",
+                escape_vault_path(vault_path)
+            )
+        }
+        Ok((_, false, _)) => {
+            anyhow::bail!(
+                "Cannot add file {}: already exists in vault",
+                escape_vault_path(vault_path)
+            )
+        }
+        Err(axiomvault_common::Error::NotFound(_)) => {
+            let (file, size) = entry.file.as_ref().with_context(|| {
+                format!(
+                    "Source file {} was not opened during collection",
+                    escape_path(&entry.abs_path)
+                )
+            })?;
+            // Re-verify the handle is still a regular file. This is a no-op
+            // on Unix where the handle was opened with O_NOFOLLOW, but it
+            // keeps the non-Unix fallback safe.
+            let metadata = file
+                .metadata()
+                .with_context(|| format!("Failed to inspect {}", escape_path(&entry.abs_path)))?;
+            if !metadata.is_file() {
+                anyhow::bail!("{} is not a regular file", escape_path(&entry.abs_path));
+            }
+            ops.create_file_from_reader(vault_path, file.try_clone()?, Some(*size))
+                .await
+                .map_err(escape_core_error)?;
+            Ok(())
+        }
+        Err(error) => Err(escape_core_error(error)),
+    }
+}
+
+/// Walk a local directory tree and return every entry. On Unix this uses
+/// directory file descriptors so the traversal is not fooled by a directory
+/// swap and file opens are not fooled by an intermediate symlink component
+/// or a FIFO. Entries are sorted by file name within each directory and the
+/// returned vector is sorted by relative path for deterministic processing.
+async fn collect_directory_entries(root: &Path) -> Result<Vec<CollectedEntry>> {
+    #[cfg(unix)]
+    {
+        collect_directory_entries_unix(root).await
+    }
+    #[cfg(not(unix))]
+    {
+        collect_directory_entries_path(root).await
+    }
+}
+
+#[cfg(unix)]
+async fn collect_directory_entries_unix(root: &Path) -> Result<Vec<CollectedEntry>> {
+    use rustix::fs::{AtFlags, FileType, OFlags, RawDir};
+    use std::os::unix::ffi::OsStrExt;
+
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let dir = open_dir_nofollow(&root)?;
+        let mut result = Vec::new();
+        let mut stack: Vec<(std::fs::File, PathBuf)> = vec![(dir, PathBuf::new())];
+
+        while let Some((dir, rel)) = stack.pop() {
+            let mut names: Vec<std::ffi::OsString> = Vec::new();
+            let mut buf = [std::mem::MaybeUninit::<u8>::uninit(); 8192];
+            let mut iter = RawDir::new(&dir, &mut buf);
+            while let Some(entry) = iter.next() {
+                let entry = entry
+                    .with_context(|| format!("Failed to read directory {}", escape_path(&root)))?;
+                let name_bytes = entry.file_name().to_bytes();
+                if name_bytes == b"." || name_bytes == b".." {
+                    continue;
+                }
+                names.push(std::ffi::OsStr::from_bytes(name_bytes).to_os_string());
+            }
+            names.sort();
+
+            for name in names {
+                let entry_rel = rel.join(&name);
+                let abs = root.join(&entry_rel);
+
+                // fstatat relative to the directory fd does not follow
+                // symlinks and is not fooled by intermediate symlink
+                // components because we are already inside the directory.
+                let stat = rustix::fs::statat(&dir, &name, AtFlags::SYMLINK_NOFOLLOW)
+                    .with_context(|| format!("Failed to inspect {}", escape_path(&abs)))?;
+                let file_type = FileType::from_raw_mode(stat.st_mode);
+
+                match file_type {
+                    FileType::Symlink => {
+                        anyhow::bail!("Refusing to add symlink: {}", escape_path(&abs));
+                    }
+                    FileType::Directory => {
+                        result.push(CollectedEntry::dir(abs.clone(), entry_rel.clone()));
+                        let sub = open_subdir_nofollow(&dir, &name, &abs)?;
+                        stack.push((sub, entry_rel));
+                    }
+                    FileType::RegularFile => {
+                        let (file, size) = open_file_at(&dir, &name, &abs)?;
+                        result.push(CollectedEntry::file(abs, entry_rel, file, size));
+                    }
+                    _ => {
+                        anyhow::bail!("Refusing to add special file: {}", escape_path(&abs));
+                    }
+                }
+            }
+        }
+
+        result.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        Ok(result)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("directory walk task failed: {error}"))?
+}
+
+#[cfg(unix)]
+fn open_dir_nofollow(path: &Path) -> Result<std::fs::File> {
+    use rustix::fs::OFlags;
+
+    let fd = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("Failed to open directory {}", escape_path(path)))?;
+    Ok(std::fs::File::from(fd))
+}
+
+#[cfg(unix)]
+fn open_subdir_nofollow(
+    dir: &std::fs::File,
+    name: &std::ffi::OsStr,
+    abs: &Path,
+) -> Result<std::fs::File> {
+    use rustix::fs::OFlags;
+
+    let fd = rustix::fs::openat(
+        dir,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("Failed to open subdirectory {}", escape_path(abs)))?;
+    Ok(std::fs::File::from(fd))
+}
+
+#[cfg(unix)]
+fn open_file_at(
+    dir: &std::fs::File,
+    name: &std::ffi::OsStr,
+    abs: &Path,
+) -> Result<(std::fs::File, u64)> {
+    use rustix::fs::OFlags;
+
+    let fd = rustix::fs::openat(
+        dir,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .with_context(|| format!("Failed to open {}", escape_path(abs)))?;
+    let file = std::fs::File::from(fd);
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("Failed to inspect {}", escape_path(abs)))?;
+    if !metadata.is_file() {
+        anyhow::bail!("{} is not a regular file", escape_path(abs));
+    }
+    Ok((file, metadata.len()))
+}
+
+#[cfg(not(unix))]
+async fn collect_directory_entries_path(root: &Path) -> Result<Vec<CollectedEntry>> {
     let mut result = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
 
@@ -483,17 +658,22 @@ async fn collect_directory_entries(root: &Path) -> Result<Vec<(PathBuf, PathBuf,
             if file_type.is_symlink() {
                 anyhow::bail!("Refusing to add symlink: {}", escape_path(&path));
             } else if file_type.is_dir() {
-                result.push((path.clone(), rel, true));
+                result.push(CollectedEntry::dir(path.clone(), rel));
                 stack.push(path);
             } else if file_type.is_file() {
-                result.push((path, rel, false));
+                result.push(CollectedEntry::file(
+                    path,
+                    rel,
+                    std::fs::File::open(&path)?,
+                    0,
+                ));
             } else {
                 anyhow::bail!("Refusing to add special file: {}", escape_path(&path));
             }
         }
     }
 
-    result.sort_by(|a, b| a.1.cmp(&b.1));
+    result.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(result)
 }
 
@@ -511,9 +691,9 @@ fn vault_path_for_relative(dest: &VaultPath, rel: &Path) -> Result<VaultPath> {
                         escape_controls(&os.to_string_lossy())
                     )
                 })?;
-                path = path
-                    .join(name)
-                    .with_context(|| format!("Invalid vault path component: {name}"))?;
+                path = path.join(name).with_context(|| {
+                    format!("Invalid vault path component: {}", escape_name(name))
+                })?;
             }
             other => {
                 anyhow::bail!("Relative path contains unsafe component: {other:?}")

@@ -60,6 +60,7 @@ impl VaultFixture {
         let password_file = root.join("password.txt");
         fs::write(&password_file, b"synthetic-password\n").unwrap();
         let mut perms = fs::metadata(&password_file).unwrap().permissions();
+        #[cfg(unix)]
         perms.set_mode(0o600);
         fs::set_permissions(&password_file, perms).unwrap();
 
@@ -517,10 +518,11 @@ fn add_directory_refuses_special_files() {
     fs::write(source.join("ok.txt"), b"ok").unwrap();
 
     let fifo = source.join("pipe");
-    unsafe {
-        let path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
-        assert_eq!(libc::mkfifo(path.as_ptr(), 0o600), 0);
-    }
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo available");
+    assert!(status.success(), "mkfifo failed");
 
     let out = fx.add_fail(&source, "/Dokumente");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -682,4 +684,198 @@ fn file_list_escapes_control_characters() {
     assert!(stdout.contains("\\x1b[31mred\\x0aline.txt"), "{stdout}");
     assert!(!stdout.contains("\x1b["), "{stdout}");
     assert!(!stdout.contains("red\nline"), "{stdout}");
+}
+
+#[test]
+#[cfg(unix)]
+fn add_directory_preflight_refuses_non_utf8_name() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let fx = VaultFixture::new("non-utf8");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("ok.txt"), b"ok").unwrap();
+
+    // 0xFF is not valid UTF-8, so the name cannot be represented as a vault path.
+    let bad = std::ffi::OsString::from_vec(vec![0xff]);
+    fs::write(source.join(&bad), b"bad").unwrap();
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Non-UTF-8 path component") || stderr.contains("Invalid relative path"),
+        "{stderr}"
+    );
+
+    // Preflight should leave the destination empty.
+    let contents = fx.list("/");
+    assert!(!contents.iter().any(|(n, _, _)| n == "Dokumente"));
+}
+
+#[test]
+fn add_directory_preflight_escapes_control_characters_in_error() {
+    let fx = VaultFixture::new("control-error");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("ok.txt"), b"ok").unwrap();
+
+    // A name that is valid UTF-8 but contains an ANSI escape and a newline,
+    // plus a backslash so VaultPath rejects the component. The error message
+    // must escape the control characters instead of restyling the terminal.
+    let bad = "a\\\x1b[31mb\\\nc.txt";
+    fs::write(source.join(bad), b"bad").unwrap();
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Invalid vault path component") || stderr.contains("Invalid relative path"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("\\x1b[31m") || stderr.contains("\\x1b"),
+        "ANSI escape was not escaped: {stderr}"
+    );
+    assert!(
+        !stderr.contains("\x1b["),
+        "raw ANSI escape reached stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("b\nc"),
+        "raw newline reached stderr: {stderr}"
+    );
+
+    let contents = fx.list("/");
+    assert!(!contents.iter().any(|(n, _, _)| n == "Dokumente"));
+}
+
+#[test]
+#[cfg(unix)]
+fn add_directory_refuses_symlink_directory_swap() {
+    let fx = VaultFixture::new("dir-swap");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+    let real = source.join("real");
+    fs::create_dir_all(&real).unwrap();
+    fs::write(real.join("file.txt"), b"x").unwrap();
+
+    // Replace the subdirectory with a symlink to another directory. The walk
+    // must not follow it.
+    fs::remove_dir_all(&real).unwrap();
+    let target = fx.root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("secret.txt"), b"stolen").unwrap();
+    std::os::unix::fs::symlink(&target, &real).unwrap();
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("symlink") || stderr.contains("Refusing to add symlink"),
+        "{stderr}"
+    );
+
+    let contents = fx.list("/");
+    assert!(!contents.iter().any(|(n, _, _)| n == "Dokumente"));
+}
+
+#[test]
+#[cfg(unix)]
+fn add_directory_refuses_intermediate_symlink_component() {
+    let fx = VaultFixture::new("intermediate-symlink");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+    let middle = source.join("middle");
+    fs::create_dir_all(&middle).unwrap();
+    fs::write(middle.join("file.txt"), b"x").unwrap();
+
+    // Replace an intermediate directory with a symlink to a directory that
+    // contains a file with a different name.
+    fs::remove_dir_all(&middle).unwrap();
+    let target = fx.root.join("target");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("other.txt"), b"stolen").unwrap();
+    std::os::unix::fs::symlink(&target, &middle).unwrap();
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("symlink") || stderr.contains("Refusing to add symlink"),
+        "{stderr}"
+    );
+
+    let contents = fx.list("/");
+    assert!(!contents.iter().any(|(n, _, _)| n == "Dokumente"));
+}
+
+#[test]
+#[cfg(unix)]
+fn add_directory_detects_changing_source() {
+    // This test exercises the race where a source file is modified while the
+    // CLI is importing it. The CLI opens each file once during collection with
+    // O_NOFOLLOW and passes the size seen at that open to core, so a later
+    // append either is imported (if before open) or causes a size mismatch
+    // error (if after open). The important property is that the operation
+    // never hangs and never follows a symlink.
+    let fx = VaultFixture::new("changing");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+
+    // Create enough files that collection of the target file is delayed.
+    for i in 0..100 {
+        fs::write(source.join(format!("filler{:03}.txt", i)), b"fill").unwrap();
+    }
+    let target = source.join("zzz_target.txt");
+    fs::write(&target, b"original").unwrap();
+
+    let source_clone = source.clone();
+    let target_clone = target.clone();
+    let mutator = std::thread::spawn(move || {
+        // Give the CLI time to start walking, then repeatedly append to the
+        // target file and finally replace it with a symlink. Any of these
+        // should be caught without blocking.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        for _ in 0..20 {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&target_clone)
+                .unwrap();
+            std::io::Write::write_all(&mut f, b"extra").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::fs::remove_file(&target_clone).unwrap();
+        std::os::unix::fs::symlink(&source_clone, &target_clone).unwrap();
+    });
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("symlink")
+            || stderr.contains("not a regular file")
+            || stderr.contains("Failed to open")
+            || stderr.contains("size")
+            || stderr.contains("Size"),
+        "unexpected failure mode: {stderr}"
+    );
+
+    let _ = mutator.join();
+
+    // No complete tree should have been imported; a partial tree is possible
+    // but the target symlink must not have been followed.
+    let contents = fx.list("/");
+    if contents.iter().any(|(n, _, _)| n == "Dokumente") {
+        let subtree = fx.list("/Dokumente");
+        for (name, is_file, _) in subtree {
+            if is_file && name == "zzz_target.txt" {
+                // If imported, the content must be a regular file, never a
+                // symlink to the source directory.
+                let extracted = fx.root.join("extracted.txt");
+                fx.extract("/Dokumente/zzz_target.txt", &extracted);
+                let data = std::fs::read(&extracted).unwrap();
+                assert!(
+                    data.starts_with(b"original") || data.is_empty(),
+                    "symlink target was followed: {:?}",
+                    data
+                );
+            }
+        }
+    }
 }

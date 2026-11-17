@@ -68,4 +68,4 @@ getrandom = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 axiomvault-agent = { git = "https://github.com/axiom-vault/axiom-core", rev = "d2e00b95ef36033426405d5c0ea0ca28c1b4d494" }
-libc = "0.2"
+rustix = { version = "1.1.6", features = ["fs"] }
