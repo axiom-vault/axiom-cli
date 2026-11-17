@@ -221,6 +221,7 @@ dependencies = [
  "clap_complete",
  "dirs 7.0.0",
  "getrandom 0.4.3",
+ "libc",
  "open",
  "rpassword",
  "serde",

@@ -4,13 +4,14 @@
 //! through the core API so the non-interactive CLI binary can be exercised.
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use axiomvault_common::VaultId;
+use axiomvault_common::{VaultId, VaultPath};
 use axiomvault_crypto::KdfParams;
-use axiomvault_vault::VaultManager;
+use axiomvault_vault::{VaultManager, VaultOperations};
 
 fn axiom(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_axiom"))
@@ -90,7 +91,7 @@ impl VaultFixture {
         self.root.join("vault")
     }
 
-    fn list(&self, dir: &str) -> Vec<(String, bool, u64)> {
+    fn list_raw(&self, dir: &str) -> String {
         let out = run(&[
             "--password-file",
             self.password_file.to_str().unwrap(),
@@ -101,7 +102,11 @@ impl VaultFixture {
             "--dir",
             dir,
         ]);
-        let stdout = String::from_utf8(out.stdout).unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn list(&self, dir: &str) -> Vec<(String, bool, u64)> {
+        let stdout = self.list_raw(dir);
         stdout
             .lines()
             .skip(1) // "Contents of ..."
@@ -408,4 +413,226 @@ fn add_directory_is_deterministic_across_unordered_sources() {
             "c.txt".to_string()
         ]
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn add_directory_refuses_top_level_symlink_with_trailing_slash() {
+    let fx = VaultFixture::new("symlink-trailing-slash");
+    let target = fx.root.join("real-dir");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("file.txt"), b"x").unwrap();
+
+    let link = fx.root.join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    for spelling in [
+        format!("{}/", link.display()),
+        format!("{}/.", link.display()),
+    ] {
+        let source = PathBuf::from(spelling);
+        let out = fx.add_fail(&source, "/Dokumente");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("symlink") || stderr.contains("Refusing to add symlink"),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn add_directory_refuses_nested_symlink_to_directory() {
+    let fx = VaultFixture::new("nested-symlink-dir");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+
+    let target = fx.root.join("secret-dir");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("secret.txt"), b"secret").unwrap();
+
+    std::os::unix::fs::symlink(&target, source.join("link-dir")).unwrap();
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("symlink") || stderr.contains("Refusing to add symlink"),
+        "{stderr}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn add_directory_refuses_special_files() {
+    let fx = VaultFixture::new("special-file");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("ok.txt"), b"ok").unwrap();
+
+    let fifo = source.join("pipe");
+    unsafe {
+        let path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(libc::mkfifo(path.as_ptr(), 0o600), 0);
+    }
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("special file") || stderr.contains("Refusing to add special file"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn add_directory_preflight_refuses_non_representable_names() {
+    let fx = VaultFixture::new("non-representable");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("ok.txt"), b"ok").unwrap();
+    // Linux allows backslashes in file names, but they are not valid VaultPath components.
+    fs::write(source.join("a\\b.txt"), b"bad").unwrap();
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Invalid vault path component") || stderr.contains("Invalid relative path"),
+        "{stderr}"
+    );
+
+    // Preflight should leave the destination empty.
+    let contents = fx.list("/");
+    assert!(!contents.iter().any(|(n, _, _)| n == "Dokumente"));
+}
+
+#[test]
+fn add_directory_preflight_leaves_no_partial_tree_on_conflict() {
+    let fx = VaultFixture::new("partial-conflict");
+    run(&[
+        "--password-file",
+        fx.password_file.to_str().unwrap(),
+        "file",
+        "mkdir",
+        "--vault-path",
+        fx.vault_path().to_str().unwrap(),
+        "--dir",
+        "/Dokumente",
+    ]);
+    run(&[
+        "--password-file",
+        fx.password_file.to_str().unwrap(),
+        "file",
+        "mkdir",
+        "--vault-path",
+        fx.vault_path().to_str().unwrap(),
+        "--dir",
+        "/Dokumente/middle",
+    ]);
+    let preexisting = fx.root.join("preexisting.txt");
+    fs::write(&preexisting, b"preexisting").unwrap();
+    run(&[
+        "--password-file",
+        fx.password_file.to_str().unwrap(),
+        "file",
+        "add",
+        "--vault-path",
+        fx.vault_path().to_str().unwrap(),
+        "--source",
+        preexisting.to_str().unwrap(),
+        "--dest",
+        "/Dokumente/middle/file.txt",
+    ]);
+
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(source.join("middle")).unwrap();
+    fs::write(source.join("first.txt"), b"first").unwrap();
+    fs::write(source.join("middle/file.txt"), b"second").unwrap();
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("already exists") || stderr.contains("Cannot add file"),
+        "{stderr}"
+    );
+
+    // Only the pre-existing file should exist; the new tree must not be partially imported.
+    let contents = fx.list("/Dokumente");
+    assert_eq!(contents, vec![("middle".to_string(), true, 0)]);
+    let contents = fx.list("/Dokumente/middle");
+    assert_eq!(contents, vec![("file.txt".to_string(), false, 11)]);
+}
+
+#[test]
+fn add_directory_preflight_refuses_existing_file_in_tree_path() {
+    let fx = VaultFixture::new("tree-path-file");
+    run(&[
+        "--password-file",
+        fx.password_file.to_str().unwrap(),
+        "file",
+        "mkdir",
+        "--vault-path",
+        fx.vault_path().to_str().unwrap(),
+        "--dir",
+        "/Dokumente",
+    ]);
+    let placeholder = fx.root.join("placeholder.txt");
+    fs::write(&placeholder, b"placeholder").unwrap();
+    run(&[
+        "--password-file",
+        fx.password_file.to_str().unwrap(),
+        "file",
+        "add",
+        "--vault-path",
+        fx.vault_path().to_str().unwrap(),
+        "--source",
+        placeholder.to_str().unwrap(),
+        "--dest",
+        "/Dokumente/subdir",
+    ]);
+
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(source.join("subdir")).unwrap();
+    fs::write(source.join("subdir/file.txt"), b"x").unwrap();
+
+    let out = fx.add_fail(&source, "/Dokumente");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Cannot create directory")
+            || stderr.contains("already exists")
+            || stderr.contains("Path already exists"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn file_list_escapes_control_characters() {
+    let fx = VaultFixture::new("escape");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("plain.txt"), b"x").unwrap();
+
+    fx.add(&source, "/Dokumente");
+
+    // Add a file whose name contains an ANSI escape and a newline via core API.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let manager = VaultManager::new();
+        let provider_config =
+            serde_json::json!({"root": fx.vault_path().to_string_lossy().to_string()});
+        let session = manager
+            .open_vault("local", provider_config, b"synthetic-password")
+            .await
+            .unwrap();
+        let ops = VaultOperations::new(&session).unwrap();
+        ops.create_file(
+            &VaultPath::parse("/Dokumente/\x1b[31mred\nline.txt").unwrap(),
+            b"y",
+        )
+        .await
+        .unwrap();
+    });
+
+    let stdout = fx.list_raw("/Dokumente");
+    assert!(stdout.contains("\\x1b[31mred\\x0aline.txt"), "{stdout}");
+    assert!(!stdout.contains("\x1b["), "{stdout}");
+    assert!(!stdout.contains("red\nline"), "{stdout}");
 }

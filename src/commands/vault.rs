@@ -22,6 +22,25 @@ use axiomvault_vault::{
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Escape ASCII control characters so untrusted names cannot restyle the
+/// terminal or forge extra output lines.
+fn escape_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            out.push_str(&format!("\\x{:02x}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Display a path with control characters escaped.
+fn escape_path(path: &Path) -> String {
+    escape_controls(&path.to_string_lossy())
+}
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tracing::info;
@@ -147,8 +166,9 @@ pub(crate) async fn cmd_list(vault_path: &Path, dir: &str) -> Result<()> {
     if contents.is_empty() {
         println!("Directory is empty.");
     } else {
-        println!("Contents of {}:", dir);
+        println!("Contents of {}:", escape_controls(dir));
         for (name, is_dir, size) in contents {
+            let name = escape_controls(&name);
             if is_dir {
                 println!("  [DIR]  {}/", name);
             } else {
@@ -191,24 +211,37 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
         .with_context(|| format!("Failed to inspect source {}", source.display()))?;
 
     if source_meta.is_dir() {
+        // Reject a symlink-to-directory even when the user spells it with a
+        // trailing slash or dot: metadata() follows the link, but
+        // symlink_metadata on the normalized path reveals the final component.
+        let normalized = normalize_path(source);
+        let normalized_meta = tokio::fs::symlink_metadata(&normalized)
+            .await
+            .with_context(|| format!("Failed to inspect source {}", escape_path(source)))?;
+        if normalized_meta.is_symlink() {
+            anyhow::bail!(
+                "Source {} is a symlink; refusing to traverse it",
+                escape_path(source)
+            );
+        }
         add_directory_tree(&ops, source, &dest_path)
             .await
             .with_context(|| {
                 format!(
                     "Failed to add directory {} to {}",
-                    source.display(),
+                    escape_path(source),
                     dest_path
                 )
             })?;
         println!(
             "Directory added successfully: {} -> {}",
-            source.display(),
+            escape_path(source),
             dest_path
         );
     } else {
         add_file_checked(&ops, &dest_path, source)
             .await
-            .with_context(|| format!("Failed to add file {}", source.display()))?;
+            .with_context(|| format!("Failed to add file {}", escape_path(source)))?;
         let (_, _, size) = ops.metadata(&dest_path).await?;
 
         println!(
@@ -247,32 +280,72 @@ async fn add_file_checked(
     }
 }
 
+/// Report why a vault path cannot be imported, escaping any untrusted name.
+fn vault_conflict_error(vault_path: &VaultPath, wanted_dir: bool) -> String {
+    if wanted_dir {
+        format!(
+            "Cannot create directory {}: a file already exists there",
+            vault_path
+        )
+    } else {
+        format!(
+            "Cannot add file {}: a directory already exists there",
+            vault_path
+        )
+    }
+}
+
 /// Recursively import a local directory tree into a vault destination
 /// directory. Empty directories are created, entries are processed in
 /// deterministic (sorted) order, and symlinks or special files are refused.
+/// The whole tree is preflighted for representability and vault conflicts
+/// before any write, so a validation failure leaves no partial import.
 async fn add_directory_tree(
     ops: &VaultOperations<'_>,
     source: &Path,
     dest: &VaultPath,
 ) -> Result<()> {
-    // Reject a symlink-to-directory at the top level; metadata() above would
-    // have reported it as a directory, but we must not traverse symlinks.
-    let source_meta = tokio::fs::symlink_metadata(source)
-        .await
-        .with_context(|| format!("Failed to inspect source {}", source.display()))?;
-    if source_meta.is_symlink() {
-        anyhow::bail!(
-            "Source {} is a symlink; refusing to traverse it",
-            source.display()
-        );
+    // Collect the source tree first. This validates every relative path and
+    // every file type before the first vault mutation.
+    let entries = collect_directory_entries(source).await?;
+
+    // Build and validate the vault destination for every entry.
+    let mut plans = Vec::with_capacity(entries.len());
+    for (src_path, rel_path, is_dir) in &entries {
+        let vault_path = vault_path_for_relative(dest, rel_path).with_context(|| {
+            format!(
+                "Invalid relative path {} under {}",
+                escape_path(rel_path),
+                escape_path(source)
+            )
+        })?;
+        plans.push((src_path.clone(), rel_path.clone(), *is_dir, vault_path));
     }
 
+    // Preflight vault conflicts: fail before creating the destination or
+    // importing any file, so the tree is never left half-written by a
+    // representability or conflict error.
+    for (_, _, is_dir, vault_path) in &plans {
+        match ops.metadata(vault_path).await {
+            Ok((_, true, _)) if *is_dir => {}
+            Ok((_, false, _)) if !is_dir => {
+                anyhow::bail!("Cannot add file {}: already exists in vault", vault_path)
+            }
+            Ok((_, true, _)) => {
+                anyhow::bail!("{}", vault_conflict_error(vault_path, false))
+            }
+            Ok((_, false, _)) => {
+                anyhow::bail!("{}", vault_conflict_error(vault_path, true))
+            }
+            Err(axiomvault_common::Error::NotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    // Only after preflight succeeds do we touch the vault.
     ensure_vault_directory(ops, dest).await?;
 
-    let entries = collect_directory_entries(source).await?;
-    for (src_path, rel_path, is_dir) in entries {
-        let vault_path = vault_path_for_relative(dest, &rel_path)
-            .with_context(|| format!("Invalid relative path {}", rel_path.display()))?;
+    for (src_path, _rel_path, is_dir, vault_path) in plans {
         if is_dir {
             ensure_vault_directory(ops, &vault_path).await?;
         } else {
@@ -311,11 +384,11 @@ async fn collect_directory_entries(root: &Path) -> Result<Vec<(PathBuf, PathBuf,
         let mut entries = Vec::new();
         let mut reader = tokio::fs::read_dir(&dir)
             .await
-            .with_context(|| format!("Failed to read directory {}", dir.display()))?;
+            .with_context(|| format!("Failed to read directory {}", escape_path(&dir)))?;
         while let Some(entry) = reader
             .next_entry()
             .await
-            .with_context(|| format!("Failed to read directory {}", dir.display()))?
+            .with_context(|| format!("Failed to read directory {}", escape_path(&dir)))?
         {
             entries.push(entry);
         }
@@ -328,25 +401,25 @@ async fn collect_directory_entries(root: &Path) -> Result<Vec<(PathBuf, PathBuf,
                 .with_context(|| {
                     format!(
                         "Path {} is not under source root {}",
-                        path.display(),
-                        root.display()
+                        escape_path(&path),
+                        escape_path(root)
                     )
                 })?
                 .to_path_buf();
             let file_type = entry
                 .file_type()
                 .await
-                .with_context(|| format!("Failed to inspect {}", path.display()))?;
+                .with_context(|| format!("Failed to inspect {}", escape_path(&path)))?;
 
             if file_type.is_symlink() {
-                anyhow::bail!("Refusing to add symlink: {}", path.display());
+                anyhow::bail!("Refusing to add symlink: {}", escape_path(&path));
             } else if file_type.is_dir() {
                 result.push((path.clone(), rel, true));
                 stack.push(path);
             } else if file_type.is_file() {
                 result.push((path, rel, false));
             } else {
-                anyhow::bail!("Refusing to add special file: {}", path.display());
+                anyhow::bail!("Refusing to add special file: {}", escape_path(&path));
             }
         }
     }
@@ -364,7 +437,10 @@ fn vault_path_for_relative(dest: &VaultPath, rel: &Path) -> Result<VaultPath> {
         match component {
             std::path::Component::Normal(os) => {
                 let name = os.to_str().with_context(|| {
-                    format!("Non-UTF-8 path component: {}", os.to_string_lossy())
+                    format!(
+                        "Non-UTF-8 path component: {}",
+                        escape_controls(&os.to_string_lossy())
+                    )
                 })?;
                 path = path
                     .join(name)
@@ -376,6 +452,18 @@ fn vault_path_for_relative(dest: &VaultPath, rel: &Path) -> Result<VaultPath> {
         }
     }
     Ok(path)
+}
+
+/// Reconstruct a path from its components so trailing slashes, trailing `/./`
+/// and other no-op spellings are removed. This lets `symlink_metadata`
+/// detect a symlink at the final component even when the caller spells the
+/// path as `link/` or `link/.`.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        result.push(component.as_os_str());
+    }
+    result
 }
 
 /// Extract a file from the vault.
