@@ -301,9 +301,10 @@ async fn add_directory_file_checked(
             anyhow::bail!("Cannot add file {}: already exists in vault", vault_path)
         }
         Err(axiomvault_common::Error::NotFound(_)) => {
-            let file = open_file_nofollow(source)
+            let (file, size) = open_file_nofollow(source)
                 .with_context(|| format!("Failed to open {}", escape_path(source)))?;
-            ops.create_file_from_reader(vault_path, file).await?;
+            ops.create_file_from_reader(vault_path, file, Some(size))
+                .await?;
             Ok(())
         }
         Err(error) => Err(error.into()),
@@ -314,7 +315,7 @@ async fn add_directory_file_checked(
 /// O_NOFOLLOW; on other platforms it falls back to opening and verifying the
 /// file type.
 #[cfg(unix)]
-fn open_file_nofollow(path: &Path) -> Result<std::fs::File> {
+fn open_file_nofollow(path: &Path) -> Result<(std::fs::File, u64)> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -332,11 +333,11 @@ fn open_file_nofollow(path: &Path) -> Result<std::fs::File> {
     if !metadata.is_file() {
         anyhow::bail!("{} is not a regular file", escape_path(path));
     }
-    Ok(file)
+    Ok((file, metadata.len()))
 }
 
 #[cfg(not(unix))]
-fn open_file_nofollow(path: &Path) -> Result<std::fs::File> {
+fn open_file_nofollow(path: &Path) -> Result<(std::fs::File, u64)> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("Failed to open {}", escape_path(path)))?;
     let metadata = file
@@ -345,7 +346,7 @@ fn open_file_nofollow(path: &Path) -> Result<std::fs::File> {
     if !metadata.is_file() {
         anyhow::bail!("{} is not a regular file", escape_path(path));
     }
-    Ok(file)
+    Ok((file, metadata.len()))
 }
 
 /// Report why a vault path cannot be imported, escaping any untrusted name.
