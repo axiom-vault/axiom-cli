@@ -255,8 +255,9 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
 }
 
 /// Import a single file after preflighting that the destination does not
-/// already exist and is not a directory. Core's own no-overwrite guard still
-/// applies when the snapshot is written.
+/// already exist and is not a directory. Symlinks in `source` are followed,
+/// preserving the original direct single-file behavior. Core's own
+/// no-overwrite guard still applies when the snapshot is written.
 async fn add_file_checked(
     ops: &VaultOperations<'_>,
     vault_path: &VaultPath,
@@ -278,6 +279,73 @@ async fn add_file_checked(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Import one file from a directory tree. The source file is opened with
+/// O_NOFOLLOW so a symlink or special-file swap between walk-time
+/// classification and open-time cannot be traversed. Core's no-overwrite
+/// guard still applies.
+async fn add_directory_file_checked(
+    ops: &VaultOperations<'_>,
+    vault_path: &VaultPath,
+    source: &Path,
+) -> Result<()> {
+    match ops.metadata(vault_path).await {
+        Ok((_, true, _)) => {
+            anyhow::bail!(
+                "Cannot add file {}: a directory already exists there",
+                vault_path
+            )
+        }
+        Ok((_, false, _)) => {
+            anyhow::bail!("Cannot add file {}: already exists in vault", vault_path)
+        }
+        Err(axiomvault_common::Error::NotFound(_)) => {
+            let file = open_file_nofollow(source)
+                .with_context(|| format!("Failed to open {}", escape_path(source)))?;
+            ops.create_file_from_reader(vault_path, file).await?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Open a regular file without following symlinks. On Unix this uses
+/// O_NOFOLLOW; on other platforms it falls back to opening and verifying the
+/// file type.
+#[cfg(unix)]
+fn open_file_nofollow(path: &Path) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "Failed to open {} without following symlinks",
+                escape_path(path)
+            )
+        })?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("Failed to inspect {}", escape_path(path)))?;
+    if !metadata.is_file() {
+        anyhow::bail!("{} is not a regular file", escape_path(path));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_file_nofollow(path: &Path) -> Result<std::fs::File> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open {}", escape_path(path)))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("Failed to inspect {}", escape_path(path)))?;
+    if !metadata.is_file() {
+        anyhow::bail!("{} is not a regular file", escape_path(path));
+    }
+    Ok(file)
 }
 
 /// Report why a vault path cannot be imported, escaping any untrusted name.
@@ -349,7 +417,7 @@ async fn add_directory_tree(
         if is_dir {
             ensure_vault_directory(ops, &vault_path).await?;
         } else {
-            add_file_checked(ops, &vault_path, &src_path).await?;
+            add_directory_file_checked(ops, &vault_path, &src_path).await?;
         }
     }
 

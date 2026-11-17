@@ -388,6 +388,53 @@ fn add_single_file_still_follows_symlink() {
 }
 
 #[test]
+fn add_single_file_records_actual_size_and_extracts() {
+    let fx = VaultFixture::new("actual-size");
+    let source = fx.root.join("data.bin");
+    let content: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    fs::write(&source, &content).unwrap();
+
+    fx.add(&source, "/data.bin");
+
+    let contents = fx.list("/");
+    assert_eq!(contents, vec![("data.bin".to_string(), false, 4096)]);
+
+    let extracted = fx.root.join("out.bin");
+    fx.extract("/data.bin", &extracted);
+    assert_eq!(fs::read(&extracted).unwrap(), content);
+}
+
+#[test]
+fn add_directory_records_actual_sizes_and_extracts_recursively() {
+    let fx = VaultFixture::new("recursive-actual-size");
+    let source = fx.root.join("Dokumente");
+    fs::create_dir_all(source.join("nested")).unwrap();
+    let top = b"top-level content".to_vec();
+    let nested = (0..8192).map(|i| (i % 256) as u8).collect::<Vec<u8>>();
+    fs::write(source.join("top.txt"), &top).unwrap();
+    fs::write(source.join("nested/big.bin"), &nested).unwrap();
+
+    fx.add(&source, "/Dokumente");
+
+    let contents = fx.list("/Dokumente");
+    assert!(contents
+        .iter()
+        .any(|(n, d, s)| n == "top.txt" && !d && *s == 17));
+    assert!(contents.iter().any(|(n, d, _)| n == "nested" && *d));
+
+    let contents = fx.list("/Dokumente/nested");
+    assert_eq!(contents, vec![("big.bin".to_string(), false, 8192)]);
+
+    let top_out = fx.root.join("top-out.txt");
+    fx.extract("/Dokumente/top.txt", &top_out);
+    assert_eq!(fs::read(&top_out).unwrap(), top);
+
+    let big_out = fx.root.join("big-out.bin");
+    fx.extract("/Dokumente/nested/big.bin", &big_out);
+    assert_eq!(fs::read(&big_out).unwrap(), nested);
+}
+
+#[test]
 fn add_directory_is_deterministic_across_unordered_sources() {
     // The local filesystem may return directory entries in any order. The
     // recursive import must produce the same vault tree regardless of that
