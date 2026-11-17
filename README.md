@@ -59,6 +59,9 @@ axiom vault create --name MyVault --path ~/my-vault
 # Add files
 axiom file add --vault-path ~/my-vault --source ~/secret.pdf --dest /secret.pdf
 
+# Add a whole directory tree
+axiom file add --vault-path ~/my-vault --source ~/Dokumente --dest /Dokumente
+
 # List contents
 axiom file list --vault-path ~/my-vault
 
@@ -278,7 +281,7 @@ before retrying an atomic save.
 | `vault check` | Check vault health and integrity |
 | `vault list --root <DIR> [--depth N] [--json]` | Find vaults under DIR and show their unverified plaintext id, version and provider (no password; never opens a vault) |
 | `file list` | List vault contents |
-| `file add` | Add file to vault |
+| `file add` | Add a file or directory tree to the vault |
 | `file extract` | Extract file from vault |
 | `file mkdir` | Create directory in vault |
 | `file remove` | Remove file or directory |

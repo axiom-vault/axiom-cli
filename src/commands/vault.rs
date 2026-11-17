@@ -161,9 +161,9 @@ pub(crate) async fn cmd_list(vault_path: &Path, dir: &str) -> Result<()> {
     Ok(())
 }
 
-/// Add a file to the vault.
+/// Add a file or directory tree to the vault.
 pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Result<()> {
-    info!("Adding file to vault");
+    info!("Adding to vault");
 
     let password = vault_password("Enter password: ")?;
     let path_str = vault_path.to_string_lossy().to_string();
@@ -181,19 +181,201 @@ pub(crate) async fn cmd_add(vault_path: &Path, source: &Path, dest: &str) -> Res
     let ops = VaultOperations::new(&session)?;
     let dest_path = VaultPath::parse(dest).context("Invalid destination path")?;
 
-    // Streams the source through encryption so large files never sit in memory.
-    ops.create_file_from_path(&dest_path, source)
+    // Use metadata (follows symlinks) to preserve legacy single-file symlink
+    // behavior: a symlink to a regular file is still imported as that file.
+    // When the source is a directory we switch to directory mode and use
+    // symlink_metadata on every entry so symlinks and special files are
+    // rejected rather than traversed.
+    let source_meta = tokio::fs::metadata(source)
         .await
-        .context("Failed to add file")?;
-    let (_, _, size) = ops.metadata(&dest_path).await?;
+        .with_context(|| format!("Failed to inspect source {}", source.display()))?;
 
-    println!(
-        "File added successfully: {} ({} bytes)",
-        dest,
-        size.unwrap_or_default()
-    );
+    if source_meta.is_dir() {
+        add_directory_tree(&ops, source, &dest_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to add directory {} to {}",
+                    source.display(),
+                    dest_path
+                )
+            })?;
+        println!(
+            "Directory added successfully: {} -> {}",
+            source.display(),
+            dest_path
+        );
+    } else {
+        add_file_checked(&ops, &dest_path, source)
+            .await
+            .with_context(|| format!("Failed to add file {}", source.display()))?;
+        let (_, _, size) = ops.metadata(&dest_path).await?;
+
+        println!(
+            "File added successfully: {} ({} bytes)",
+            dest,
+            size.unwrap_or_default()
+        );
+    }
 
     Ok(())
+}
+
+/// Import a single file after preflighting that the destination does not
+/// already exist and is not a directory. Core's own no-overwrite guard still
+/// applies when the snapshot is written.
+async fn add_file_checked(
+    ops: &VaultOperations<'_>,
+    vault_path: &VaultPath,
+    source: &Path,
+) -> Result<()> {
+    match ops.metadata(vault_path).await {
+        Ok((_, true, _)) => {
+            anyhow::bail!(
+                "Cannot add file {}: a directory already exists there",
+                vault_path
+            )
+        }
+        Ok((_, false, _)) => {
+            anyhow::bail!("Cannot add file {}: already exists in vault", vault_path)
+        }
+        Err(axiomvault_common::Error::NotFound(_)) => {
+            ops.create_file_from_path(vault_path, source).await?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Recursively import a local directory tree into a vault destination
+/// directory. Empty directories are created, entries are processed in
+/// deterministic (sorted) order, and symlinks or special files are refused.
+async fn add_directory_tree(
+    ops: &VaultOperations<'_>,
+    source: &Path,
+    dest: &VaultPath,
+) -> Result<()> {
+    // Reject a symlink-to-directory at the top level; metadata() above would
+    // have reported it as a directory, but we must not traverse symlinks.
+    let source_meta = tokio::fs::symlink_metadata(source)
+        .await
+        .with_context(|| format!("Failed to inspect source {}", source.display()))?;
+    if source_meta.is_symlink() {
+        anyhow::bail!(
+            "Source {} is a symlink; refusing to traverse it",
+            source.display()
+        );
+    }
+
+    ensure_vault_directory(ops, dest).await?;
+
+    let entries = collect_directory_entries(source).await?;
+    for (src_path, rel_path, is_dir) in entries {
+        let vault_path = vault_path_for_relative(dest, &rel_path)
+            .with_context(|| format!("Invalid relative path {}", rel_path.display()))?;
+        if is_dir {
+            ensure_vault_directory(ops, &vault_path).await?;
+        } else {
+            add_file_checked(ops, &vault_path, &src_path).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Ensure `path` exists as a directory in the vault, creating it when missing
+/// and failing if it already exists as a file.
+async fn ensure_vault_directory(ops: &VaultOperations<'_>, path: &VaultPath) -> Result<()> {
+    match ops.metadata(path).await {
+        Ok((_, true, _)) => Ok(()),
+        Ok((_, false, _)) => {
+            anyhow::bail!("Destination path {} already exists as a file", path)
+        }
+        Err(axiomvault_common::Error::NotFound(_)) => {
+            ops.create_directory(path).await?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Walk a local directory tree and return every entry as
+/// (absolute source path, path relative to source root, is_directory).
+/// Entries are sorted by file name within each directory and the returned
+/// vector is sorted by relative path for deterministic processing order.
+async fn collect_directory_entries(root: &Path) -> Result<Vec<(PathBuf, PathBuf, bool)>> {
+    let mut result = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let mut entries = Vec::new();
+        let mut reader = tokio::fs::read_dir(&dir)
+            .await
+            .with_context(|| format!("Failed to read directory {}", dir.display()))?;
+        while let Some(entry) = reader
+            .next_entry()
+            .await
+            .with_context(|| format!("Failed to read directory {}", dir.display()))?
+        {
+            entries.push(entry);
+        }
+        entries.sort_by_key(|a| a.file_name());
+
+        for entry in entries {
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(root)
+                .with_context(|| {
+                    format!(
+                        "Path {} is not under source root {}",
+                        path.display(),
+                        root.display()
+                    )
+                })?
+                .to_path_buf();
+            let file_type = entry
+                .file_type()
+                .await
+                .with_context(|| format!("Failed to inspect {}", path.display()))?;
+
+            if file_type.is_symlink() {
+                anyhow::bail!("Refusing to add symlink: {}", path.display());
+            } else if file_type.is_dir() {
+                result.push((path.clone(), rel, true));
+                stack.push(path);
+            } else if file_type.is_file() {
+                result.push((path, rel, false));
+            } else {
+                anyhow::bail!("Refusing to add special file: {}", path.display());
+            }
+        }
+    }
+
+    result.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(result)
+}
+
+/// Build a vault path by appending the UTF-8 components of a local relative
+/// path to a destination directory. Rejects unsafe or non-representable
+/// components such as `.`, `..`, separators, and non-UTF-8 names.
+fn vault_path_for_relative(dest: &VaultPath, rel: &Path) -> Result<VaultPath> {
+    let mut path = dest.clone();
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(os) => {
+                let name = os.to_str().with_context(|| {
+                    format!("Non-UTF-8 path component: {}", os.to_string_lossy())
+                })?;
+                path = path
+                    .join(name)
+                    .with_context(|| format!("Invalid vault path component: {name}"))?;
+            }
+            other => {
+                anyhow::bail!("Relative path contains unsafe component: {other:?}")
+            }
+        }
+    }
+    Ok(path)
 }
 
 /// Extract a file from the vault.

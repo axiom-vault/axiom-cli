@@ -203,15 +203,16 @@ pub(crate) enum FileCommands {
         #[arg(short, long, default_value = "/")]
         dir: String,
     },
-    /// Add a file to the vault.
+    /// Add a file or directory tree to the vault.
     Add {
         /// Path to the vault.
         #[arg(short = 'p', long)]
         vault_path: PathBuf,
-        /// Source file to add.
+        /// Source file or directory to add.
         #[arg(short, long)]
         source: PathBuf,
-        /// Destination path in vault.
+        /// Destination path in vault. When the source is a directory this is
+        /// the destination directory and relative source paths are appended.
         #[arg(short, long)]
         dest: String,
     },
