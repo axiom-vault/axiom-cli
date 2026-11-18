@@ -22,6 +22,8 @@ use axiomvault_vault::{
 #[cfg(unix)]
 use rustix::fs::Mode;
 use std::io::IsTerminal;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -61,36 +63,45 @@ fn escape_core_error(error: axiomvault_common::Error) -> anyhow::Error {
     anyhow::anyhow!("{}", escape_controls(&error.to_string()))
 }
 
-/// One entry collected from the source tree. On Unix the file handle is
-/// opened relative to its parent directory with `O_NOFOLLOW | O_NONBLOCK`,
-/// so directory swaps, intermediate symlink components, and FIFO swaps are
-/// caught at open time. On other platforms the handle is absent and the
-/// path is reopened later.
+/// One entry collected from the source tree. The collector records the
+/// type, size, and identity (device/inode) of every entry but does not
+/// keep file descriptors open, so large trees do not exhaust `RLIMIT_NOFILE`.
+/// Files are reopened by path relative to a root directory handle at import
+/// time and their identity is verified against the collected value, which
+/// catches symlink swaps and directory renames.
+#[derive(Debug)]
 struct CollectedEntry {
     abs_path: PathBuf,
     rel_path: PathBuf,
     is_dir: bool,
-    /// Opened file and its plaintext size. Only present for regular files
-    /// on platforms where we can open without following symlinks.
-    file: Option<(std::fs::File, u64)>,
+    /// Plaintext size recorded during collection. Only meaningful for files.
+    size: u64,
+    /// Device and inode recorded during collection. Only meaningful for files
+    /// and directories that must be re-identified during import.
+    dev: u64,
+    ino: u64,
 }
 
 impl CollectedEntry {
-    fn dir(abs_path: PathBuf, rel_path: PathBuf) -> Self {
+    fn dir(abs_path: PathBuf, rel_path: PathBuf, dev: u64, ino: u64) -> Self {
         Self {
             abs_path,
             rel_path,
             is_dir: true,
-            file: None,
+            size: 0,
+            dev,
+            ino,
         }
     }
 
-    fn file(abs_path: PathBuf, rel_path: PathBuf, file: std::fs::File, size: u64) -> Self {
+    fn file(abs_path: PathBuf, rel_path: PathBuf, size: u64, dev: u64, ino: u64) -> Self {
         Self {
             abs_path,
             rel_path,
             is_dir: false,
-            file: Some((file, size)),
+            size,
+            dev,
+            ino,
         }
     }
 }
@@ -360,11 +371,11 @@ async fn add_directory_tree(
     source: &Path,
     dest: &VaultPath,
 ) -> Result<()> {
-    // Collect the source tree first. On Unix this opens each directory with
-    // O_NOFOLLOW | O_DIRECTORY relative to its parent and each regular file
-    // with O_NOFOLLOW | O_NONBLOCK relative to its directory, so directory
-    // swaps, intermediate symlink components, and FIFO swaps are caught at
-    // open time rather than followed or blocking.
+    // Collect the source tree first. On Unix this walks the tree with
+    // directory file descriptors and records type, size, and identity
+    // (device/inode) for every entry, but does not keep descriptors open.
+    // Files are reopened by path relative to a root handle during import,
+    // with their identity verified against the collected value.
     let entries = collect_directory_entries(source).await?;
 
     // Build and validate the vault destination for every entry.
@@ -406,11 +417,24 @@ async fn add_directory_tree(
     // Only after preflight succeeds do we touch the vault.
     ensure_vault_directory(ops, dest).await?;
 
+    // Open the source root once for the import phase. Every file is reopened
+    // relative to this handle, one at a time, so large trees do not exhaust
+    // the process file-descriptor limit.
+    #[cfg(unix)]
+    let root_dir = open_dir_nofollow(&normalize_path(source))?;
+    #[cfg(not(unix))]
+    let root_dir = std::fs::File::open(source)?;
+    let dirs: std::collections::HashMap<PathBuf, &CollectedEntry> = entries
+        .iter()
+        .filter(|e| e.is_dir)
+        .map(|e| (e.rel_path.clone(), e))
+        .collect();
+
     for (entry, vault_path) in plans {
         if entry.is_dir {
             ensure_vault_directory(ops, &vault_path).await?;
         } else {
-            add_directory_file_checked(ops, &vault_path, entry).await?;
+            add_directory_file_checked(ops, &root_dir, &vault_path, entry, &dirs).await?;
         }
     }
 
@@ -438,12 +462,16 @@ async fn ensure_vault_directory(ops: &VaultOperations<'_>, path: &VaultPath) -> 
     }
 }
 
-/// Import one file from a directory tree. The file handle was opened by the
-/// collector without following symlinks and is verified to be a regular file.
+/// Import one file from a directory tree. The source file is reopened by
+/// walking from the root directory handle and verifying the collected
+/// device/inode, so a symlink swap or directory rename between collection
+/// and import is caught before any vault write.
 async fn add_directory_file_checked(
     ops: &VaultOperations<'_>,
+    root_dir: &std::fs::File,
     vault_path: &VaultPath,
     entry: &CollectedEntry,
+    dirs: &std::collections::HashMap<PathBuf, &CollectedEntry>,
 ) -> Result<()> {
     match ops.metadata(vault_path).await {
         Ok((_, true, _)) => {
@@ -459,22 +487,13 @@ async fn add_directory_file_checked(
             )
         }
         Err(axiomvault_common::Error::NotFound(_)) => {
-            let (file, size) = entry.file.as_ref().with_context(|| {
-                format!(
-                    "Source file {} was not opened during collection",
-                    escape_path(&entry.abs_path)
-                )
-            })?;
-            // Re-verify the handle is still a regular file. This is a no-op
-            // on Unix where the handle was opened with O_NOFOLLOW, but it
-            // keeps the non-Unix fallback safe.
-            let metadata = file
-                .metadata()
-                .with_context(|| format!("Failed to inspect {}", escape_path(&entry.abs_path)))?;
-            if !metadata.is_file() {
-                anyhow::bail!("{} is not a regular file", escape_path(&entry.abs_path));
-            }
-            ops.create_file_from_reader(vault_path, file.try_clone()?, Some(*size))
+            #[cfg(unix)]
+            let (file, size) = reopen_file_from_root(root_dir, entry, dirs)
+                .with_context(|| format!("Failed to open {}", escape_path(&entry.abs_path)))?;
+            #[cfg(not(unix))]
+            let (file, size) = reopen_file_from_path(entry)
+                .with_context(|| format!("Failed to open {}", escape_path(&entry.abs_path)))?;
+            ops.create_file_from_reader(vault_path, file, Some(size))
                 .await
                 .map_err(escape_core_error)?;
             Ok(())
@@ -485,9 +504,10 @@ async fn add_directory_file_checked(
 
 /// Walk a local directory tree and return every entry. On Unix this uses
 /// directory file descriptors so the traversal is not fooled by a directory
-/// swap and file opens are not fooled by an intermediate symlink component
-/// or a FIFO. Entries are sorted by file name within each directory and the
-/// returned vector is sorted by relative path for deterministic processing.
+/// swap, but it does not keep regular-file descriptors open, so trees with
+/// many files do not exhaust `RLIMIT_NOFILE`. Entries are sorted by file name
+/// within each directory and the returned vector is sorted by relative path
+/// for deterministic processing.
 async fn collect_directory_entries(root: &Path) -> Result<Vec<CollectedEntry>> {
     #[cfg(unix)]
     {
@@ -501,7 +521,7 @@ async fn collect_directory_entries(root: &Path) -> Result<Vec<CollectedEntry>> {
 
 #[cfg(unix)]
 async fn collect_directory_entries_unix(root: &Path) -> Result<Vec<CollectedEntry>> {
-    use rustix::fs::{AtFlags, FileType, OFlags, RawDir};
+    use rustix::fs::{AtFlags, Dir, FileType};
     use std::os::unix::ffi::OsStrExt;
 
     let root = root.to_path_buf();
@@ -512,9 +532,9 @@ async fn collect_directory_entries_unix(root: &Path) -> Result<Vec<CollectedEntr
 
         while let Some((dir, rel)) = stack.pop() {
             let mut names: Vec<std::ffi::OsString> = Vec::new();
-            let mut buf = [std::mem::MaybeUninit::<u8>::uninit(); 8192];
-            let mut iter = RawDir::new(&dir, &mut buf);
-            while let Some(entry) = iter.next() {
+            let mut read_dir = Dir::read_from(&dir)
+                .with_context(|| format!("Failed to read directory {}", escape_path(&root)))?;
+            while let Some(entry) = read_dir.read() {
                 let entry = entry
                     .with_context(|| format!("Failed to read directory {}", escape_path(&root)))?;
                 let name_bytes = entry.file_name().to_bytes();
@@ -535,19 +555,26 @@ async fn collect_directory_entries_unix(root: &Path) -> Result<Vec<CollectedEntr
                 let stat = rustix::fs::statat(&dir, &name, AtFlags::SYMLINK_NOFOLLOW)
                     .with_context(|| format!("Failed to inspect {}", escape_path(&abs)))?;
                 let file_type = FileType::from_raw_mode(stat.st_mode);
+                let dev = stat.st_dev as u64;
+                let ino = stat.st_ino as u64;
 
                 match file_type {
                     FileType::Symlink => {
                         anyhow::bail!("Refusing to add symlink: {}", escape_path(&abs));
                     }
                     FileType::Directory => {
-                        result.push(CollectedEntry::dir(abs.clone(), entry_rel.clone()));
+                        result.push(CollectedEntry::dir(
+                            abs.clone(),
+                            entry_rel.clone(),
+                            dev,
+                            ino,
+                        ));
                         let sub = open_subdir_nofollow(&dir, &name, &abs)?;
                         stack.push((sub, entry_rel));
                     }
                     FileType::RegularFile => {
-                        let (file, size) = open_file_at(&dir, &name, &abs)?;
-                        result.push(CollectedEntry::file(abs, entry_rel, file, size));
+                        let size = stat.st_size as u64;
+                        result.push(CollectedEntry::file(abs, entry_rel, size, dev, ino));
                     }
                     _ => {
                         anyhow::bail!("Refusing to add special file: {}", escape_path(&abs));
@@ -594,29 +621,101 @@ fn open_subdir_nofollow(
     Ok(std::fs::File::from(fd))
 }
 
+/// Reopen a regular file for import by walking from the root directory
+/// handle and verifying the identity of every directory component and the
+/// file itself against the collected `dev`/`ino`. This catches symlink
+/// swaps, directory renames, and file replacements between collection and
+/// import while keeping only one file descriptor open at a time.
 #[cfg(unix)]
-fn open_file_at(
-    dir: &std::fs::File,
-    name: &std::ffi::OsStr,
-    abs: &Path,
+fn reopen_file_from_root(
+    root_dir: &std::fs::File,
+    entry: &CollectedEntry,
+    dirs: &std::collections::HashMap<PathBuf, &CollectedEntry>,
 ) -> Result<(std::fs::File, u64)> {
-    use rustix::fs::OFlags;
+    use rustix::fs::{AtFlags, FileType, OFlags};
 
-    let fd = rustix::fs::openat(
-        dir,
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .with_context(|| format!("Failed to open {}", escape_path(abs)))?;
-    let file = std::fs::File::from(fd);
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("Failed to inspect {}", escape_path(abs)))?;
-    if !metadata.is_file() {
-        anyhow::bail!("{} is not a regular file", escape_path(abs));
+    let mut current_dir = root_dir
+        .try_clone()
+        .context("Failed to duplicate root directory handle")?;
+    let mut current: &std::fs::File = &current_dir;
+    let mut current_path = PathBuf::new();
+
+    let components: Vec<_> = entry.rel_path.components().collect();
+    if components.is_empty() {
+        anyhow::bail!("Cannot import the source root as a file");
     }
-    Ok((file, metadata.len()))
+
+    for (i, component) in components.iter().enumerate() {
+        let name = component.as_os_str();
+        current_path.push(name);
+
+        let is_last = i + 1 == components.len();
+        if is_last {
+            let fd = rustix::fs::openat(
+                current,
+                name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .with_context(|| format!("Failed to open {}", escape_path(&entry.abs_path)))?;
+            let file = std::fs::File::from(fd);
+            let metadata = file
+                .metadata()
+                .with_context(|| format!("Failed to inspect {}", escape_path(&entry.abs_path)))?;
+            if !metadata.is_file() {
+                anyhow::bail!("{} is not a regular file", escape_path(&entry.abs_path));
+            }
+            let dev = metadata.dev();
+            let ino = metadata.ino();
+            if dev != entry.dev || ino != entry.ino {
+                anyhow::bail!(
+                    "{} changed between collection and import",
+                    escape_path(&entry.abs_path)
+                );
+            }
+            return Ok((file, entry.size));
+        }
+
+        let expected = dirs.get(&current_path).with_context(|| {
+            format!(
+                "Directory {} disappeared between collection and import",
+                escape_path(&entry.abs_path)
+            )
+        })?;
+        let fd = rustix::fs::openat(
+            current,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to open directory component {}",
+                escape_path(&entry.abs_path)
+            )
+        })?;
+        let next = std::fs::File::from(fd);
+        let stat = rustix::fs::fstat(&next)?;
+        let file_type = FileType::from_raw_mode(stat.st_mode);
+        if !file_type.is_dir() {
+            anyhow::bail!(
+                "Directory component {} is not a directory",
+                escape_path(&entry.abs_path)
+            );
+        }
+        let dev = stat.st_dev as u64;
+        let ino = stat.st_ino as u64;
+        if dev != expected.dev || ino != expected.ino {
+            anyhow::bail!(
+                "Directory component {} changed between collection and import",
+                escape_path(&entry.abs_path)
+            );
+        }
+        current_dir = next;
+        current = &current_dir;
+    }
+
+    unreachable!("last component is always handled above");
 }
 
 #[cfg(not(unix))]
@@ -650,23 +749,19 @@ async fn collect_directory_entries_path(root: &Path) -> Result<Vec<CollectedEntr
                     )
                 })?
                 .to_path_buf();
-            let file_type = entry
-                .file_type()
+            let metadata = entry
+                .metadata()
                 .await
                 .with_context(|| format!("Failed to inspect {}", escape_path(&path)))?;
 
-            if file_type.is_symlink() {
+            if metadata.is_symlink() {
                 anyhow::bail!("Refusing to add symlink: {}", escape_path(&path));
-            } else if file_type.is_dir() {
-                result.push(CollectedEntry::dir(path.clone(), rel));
+            } else if metadata.is_dir() {
+                result.push(CollectedEntry::dir(path.clone(), rel, 0, 0));
                 stack.push(path);
-            } else if file_type.is_file() {
-                result.push(CollectedEntry::file(
-                    path,
-                    rel,
-                    std::fs::File::open(&path)?,
-                    0,
-                ));
+            } else if metadata.is_file() {
+                let size = metadata.len();
+                result.push(CollectedEntry::file(path, rel, size, 0, 0));
             } else {
                 anyhow::bail!("Refusing to add special file: {}", escape_path(&path));
             }
@@ -675,6 +770,19 @@ async fn collect_directory_entries_path(root: &Path) -> Result<Vec<CollectedEntr
 
     result.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(result)
+}
+
+#[cfg(not(unix))]
+fn reopen_file_from_path(entry: &CollectedEntry) -> Result<(std::fs::File, u64)> {
+    let file = std::fs::File::open(&entry.abs_path)
+        .with_context(|| format!("Failed to open {}", escape_path(&entry.abs_path)))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("Failed to inspect {}", escape_path(&entry.abs_path)))?;
+    if !metadata.is_file() {
+        anyhow::bail!("{} is not a regular file", escape_path(&entry.abs_path));
+    }
+    Ok((file, entry.size))
 }
 
 /// Build a vault path by appending the UTF-8 components of a local relative
@@ -890,5 +998,184 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    mod file_add_walk {
+        use std::collections::HashMap;
+        use std::os::unix::fs::MetadataExt;
+
+        use super::*;
+
+        fn temp_root(name: &str) -> PathBuf {
+            let root = std::env::temp_dir().join(format!(
+                "axiom-vault-rs-test-{}-{}",
+                name,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            root
+        }
+
+        fn make_entry(root: &Path, rel: &str, is_dir: bool) -> CollectedEntry {
+            let abs = root.join(rel);
+            let rel_path = PathBuf::from(rel);
+            let metadata = std::fs::symlink_metadata(&abs).unwrap();
+            let dev = metadata.dev();
+            let ino = metadata.ino();
+            if is_dir {
+                CollectedEntry::dir(abs, rel_path, dev, ino)
+            } else {
+                CollectedEntry::file(abs, rel_path, metadata.len(), dev, ino)
+            }
+        }
+
+        fn dir_map(entries: &[CollectedEntry]) -> HashMap<PathBuf, &CollectedEntry> {
+            entries
+                .iter()
+                .filter(|e| e.is_dir)
+                .map(|e| (e.rel_path.clone(), e))
+                .collect()
+        }
+
+        #[test]
+        fn reopen_file_from_root_accepts_regular_file() {
+            let root = temp_root("reopen-ok");
+            std::fs::write(root.join("file.txt"), b"hello").unwrap();
+
+            let entry = make_entry(&root, "file.txt", false);
+            let root_dir = open_dir_nofollow(&root).unwrap();
+            let dirs = dir_map(&[]);
+
+            let (mut file, size) = reopen_file_from_root(&root_dir, &entry, &dirs).unwrap();
+            let mut contents = String::new();
+            std::io::Read::read_to_string(&mut file, &mut contents).unwrap();
+            assert_eq!(contents, "hello");
+            assert_eq!(size, 5);
+        }
+
+        #[test]
+        fn reopen_file_from_root_rejects_symlink_final_component() {
+            let root = temp_root("reopen-symlink-file");
+            std::fs::write(root.join("real.txt"), b"x").unwrap();
+            std::os::unix::fs::symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
+
+            // Pretend the collector saw a regular file at link.txt (impossible in
+            // the real collector, but it lets us test the reopen path directly).
+            let metadata = std::fs::symlink_metadata(root.join("link.txt")).unwrap();
+            let entry = CollectedEntry::file(
+                root.join("link.txt"),
+                PathBuf::from("link.txt"),
+                1,
+                metadata.dev(),
+                metadata.ino(),
+            );
+            let root_dir = open_dir_nofollow(&root).unwrap();
+            let dirs = dir_map(&[]);
+
+            let err = reopen_file_from_root(&root_dir, &entry, &dirs).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("not a regular file") || msg.contains("Failed to open"),
+                "{msg}"
+            );
+        }
+
+        #[test]
+        fn reopen_file_from_root_rejects_symlink_intermediate_component() {
+            let root = temp_root("reopen-symlink-dir");
+            let sub = root.join("sub");
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join("file.txt"), b"x").unwrap();
+
+            let entries = vec![
+                make_entry(&root, "sub", true),
+                make_entry(&root, "sub/file.txt", false),
+            ];
+            let dirs = dir_map(&entries);
+            let root_dir = open_dir_nofollow(&root).unwrap();
+
+            // Replace the intermediate directory with a symlink to another directory.
+            let other = root.join("other");
+            std::fs::create_dir_all(&other).unwrap();
+            std::fs::write(other.join("secret.txt"), b"stolen").unwrap();
+            std::fs::remove_dir_all(&sub).unwrap();
+            std::os::unix::fs::symlink(&other, &sub).unwrap();
+
+            let err = reopen_file_from_root(&root_dir, &entries[1], &dirs).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("changed between collection and import")
+                    || msg.contains("not a directory")
+                    || msg.contains("Failed to open directory component"),
+                "{msg}"
+            );
+        }
+
+        #[test]
+        fn reopen_file_from_root_rejects_file_replacement() {
+            let root = temp_root("reopen-replace-file");
+            let path = root.join("file.txt");
+            std::fs::write(&path, b"original").unwrap();
+
+            let entry = make_entry(&root, "file.txt", false);
+
+            // Replace the file with a different file (same name, different inode).
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, b"replacement").unwrap();
+
+            let root_dir = open_dir_nofollow(&root).unwrap();
+            let dirs = dir_map(&[]);
+
+            let err = reopen_file_from_root(&root_dir, &entry, &dirs).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("changed between collection and import"),
+                "{msg}"
+            );
+        }
+
+        #[test]
+        fn reopen_file_from_root_rejects_directory_replacement() {
+            let root = temp_root("reopen-replace-dir");
+            let sub = root.join("sub");
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join("file.txt"), b"x").unwrap();
+
+            let entries = vec![
+                make_entry(&root, "sub", true),
+                make_entry(&root, "sub/file.txt", false),
+            ];
+            let dirs = dir_map(&entries);
+            let root_dir = open_dir_nofollow(&root).unwrap();
+
+            // Replace the directory with a different directory (same name, different inode).
+            std::fs::remove_dir_all(&sub).unwrap();
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join("other.txt"), b"y").unwrap();
+
+            let err = reopen_file_from_root(&root_dir, &entries[1], &dirs).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("changed between collection and import"),
+                "{msg}"
+            );
+        }
+
+        #[test]
+        fn collect_directory_entries_rejects_symlink_directory() {
+            let root = temp_root("collect-symlink-dir");
+            let target = root.join("target");
+            std::fs::create_dir_all(&target).unwrap();
+            std::os::unix::fs::symlink(&target, root.join("link")).unwrap();
+
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let err = runtime
+                .block_on(collect_directory_entries_unix(&root.join("link")))
+                .unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("symlink"), "{msg}");
+        }
     }
 }
