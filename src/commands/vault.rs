@@ -65,7 +65,8 @@ fn escape_core_error(error: axiomvault_common::Error) -> anyhow::Error {
 
 /// One entry collected from the source tree. The collector records the
 /// type, size, and identity (device/inode) of every entry but does not
-/// keep file descriptors open, so large trees do not exhaust `RLIMIT_NOFILE`.
+/// keep directory or file descriptors open, so large trees do not exhaust
+/// `RLIMIT_NOFILE`.
 /// Files are reopened by path relative to a root directory handle at import
 /// time and their identity is verified against the collected value, which
 /// catches symlink swaps and directory renames.
@@ -355,9 +356,9 @@ async fn add_file_checked(
 fn vault_conflict_error(vault_path: &VaultPath, wanted_dir: bool) -> String {
     let path = escape_vault_path(vault_path);
     if wanted_dir {
-        format!("Cannot create directory {path}: a file already exists there")
+        format!("Cannot create directory {path}: already exists as a file")
     } else {
-        format!("Cannot add file {path}: a directory already exists there")
+        format!("Cannot add file {path}: already exists as a directory")
     }
 }
 
@@ -417,24 +418,27 @@ async fn add_directory_tree(
     // Only after preflight succeeds do we touch the vault.
     ensure_vault_directory(ops, dest).await?;
 
-    // Open the source root once for the import phase. Every file is reopened
-    // relative to this handle, one at a time, so large trees do not exhaust
-    // the process file-descriptor limit.
+    // On Unix open the source root once for the import phase. Every file is
+    // reopened relative to this handle, one component at a time, so large
+    // trees do not exhaust the process file-descriptor limit. On non-Unix
+    // platforms the fallback reopens by absolute path.
     #[cfg(unix)]
     let root_dir = open_dir_nofollow(&normalize_path(source))?;
+    #[cfg(unix)]
+    let root_ref = Some(&root_dir);
     #[cfg(not(unix))]
-    let root_dir = std::fs::File::open(source)?;
-    let dirs: std::collections::HashMap<PathBuf, &CollectedEntry> = entries
+    let root_ref: Option<&std::fs::File> = None;
+    let dirs: std::collections::HashMap<PathBuf, (u64, u64)> = entries
         .iter()
         .filter(|e| e.is_dir)
-        .map(|e| (e.rel_path.clone(), e))
+        .map(|e| (e.rel_path.clone(), (e.dev, e.ino)))
         .collect();
 
     for (entry, vault_path) in plans {
         if entry.is_dir {
             ensure_vault_directory(ops, &vault_path).await?;
         } else {
-            add_directory_file_checked(ops, &root_dir, &vault_path, entry, &dirs).await?;
+            add_directory_file_checked(ops, root_ref, &vault_path, entry, &dirs).await?;
         }
     }
 
@@ -468,10 +472,10 @@ async fn ensure_vault_directory(ops: &VaultOperations<'_>, path: &VaultPath) -> 
 /// and import is caught before any vault write.
 async fn add_directory_file_checked(
     ops: &VaultOperations<'_>,
-    root_dir: &std::fs::File,
+    root_dir: Option<&std::fs::File>,
     vault_path: &VaultPath,
     entry: &CollectedEntry,
-    dirs: &std::collections::HashMap<PathBuf, &CollectedEntry>,
+    dirs: &std::collections::HashMap<PathBuf, (u64, u64)>,
 ) -> Result<()> {
     match ops.metadata(vault_path).await {
         Ok((_, true, _)) => {
@@ -488,7 +492,7 @@ async fn add_directory_file_checked(
         }
         Err(axiomvault_common::Error::NotFound(_)) => {
             #[cfg(unix)]
-            let (file, size) = reopen_file_from_root(root_dir, entry, dirs)
+            let (file, size) = reopen_file_from_root(root_dir.unwrap(), entry, dirs)
                 .with_context(|| format!("Failed to open {}", escape_path(&entry.abs_path)))?;
             #[cfg(not(unix))]
             let (file, size) = reopen_file_from_path(entry)
@@ -522,21 +526,50 @@ async fn collect_directory_entries(root: &Path) -> Result<Vec<CollectedEntry>> {
 #[cfg(unix)]
 async fn collect_directory_entries_unix(root: &Path) -> Result<Vec<CollectedEntry>> {
     use rustix::fs::{AtFlags, Dir, FileType};
+    use std::collections::HashMap;
     use std::os::unix::ffi::OsStrExt;
 
     let root = root.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let dir = open_dir_nofollow(&root)?;
+        let root_dir = open_dir_nofollow(&root)?;
+        let root_stat = rustix::fs::fstat(&root_dir)?;
         let mut result = Vec::new();
-        let mut stack: Vec<(std::fs::File, PathBuf)> = vec![(dir, PathBuf::new())];
+        let mut dirs: HashMap<PathBuf, (u64, u64)> = HashMap::new();
+        let root_entry = CollectedEntry::dir(
+            root.clone(),
+            PathBuf::new(),
+            root_stat.st_dev as u64,
+            root_stat.st_ino as u64,
+        );
+        dirs.insert(PathBuf::new(), (root_entry.dev, root_entry.ino));
+        result.push(root_entry);
 
-        while let Some((dir, rel)) = stack.pop() {
+        // Stack of directory work items described by relative path and
+        // collected identity. Directories are reopened from the root handle
+        // one at a time, so descriptor use is bounded by tree depth rather
+        // than directory breadth.
+        let mut stack: Vec<(PathBuf, u64, u64)> = vec![(
+            PathBuf::new(),
+            root_stat.st_dev as u64,
+            root_stat.st_ino as u64,
+        )];
+
+        while let Some((rel, expected_dev, expected_ino)) = stack.pop() {
+            let dir = reopen_dir_from_root(&root_dir, &rel, expected_dev, expected_ino, &dirs)
+                .with_context(|| {
+                    format!(
+                        "Failed to reopen directory {}",
+                        escape_path(&root.join(&rel))
+                    )
+                })?;
             let mut names: Vec<std::ffi::OsString> = Vec::new();
-            let mut read_dir = Dir::read_from(&dir)
-                .with_context(|| format!("Failed to read directory {}", escape_path(&root)))?;
+            let mut read_dir = Dir::read_from(&dir).with_context(|| {
+                format!("Failed to read directory {}", escape_path(&root.join(&rel)))
+            })?;
             while let Some(entry) = read_dir.read() {
-                let entry = entry
-                    .with_context(|| format!("Failed to read directory {}", escape_path(&root)))?;
+                let entry = entry.with_context(|| {
+                    format!("Failed to read directory {}", escape_path(&root.join(&rel)))
+                })?;
                 let name_bytes = entry.file_name().to_bytes();
                 if name_bytes == b"." || name_bytes == b".." {
                     continue;
@@ -563,14 +596,10 @@ async fn collect_directory_entries_unix(root: &Path) -> Result<Vec<CollectedEntr
                         anyhow::bail!("Refusing to add symlink: {}", escape_path(&abs));
                     }
                     FileType::Directory => {
-                        result.push(CollectedEntry::dir(
-                            abs.clone(),
-                            entry_rel.clone(),
-                            dev,
-                            ino,
-                        ));
-                        let sub = open_subdir_nofollow(&dir, &name, &abs)?;
-                        stack.push((sub, entry_rel));
+                        let entry = CollectedEntry::dir(abs, entry_rel.clone(), dev, ino);
+                        dirs.insert(entry_rel.clone(), (dev, ino));
+                        result.push(entry);
+                        stack.push((entry_rel, dev, ino));
                     }
                     FileType::RegularFile => {
                         let size = stat.st_size as u64;
@@ -603,22 +632,83 @@ fn open_dir_nofollow(path: &Path) -> Result<std::fs::File> {
     Ok(std::fs::File::from(fd))
 }
 
+/// Reopen a directory by walking from the root directory handle and
+/// verifying every directory component against the collected `dev`/`ino`.
+/// This is used by the collector so it never holds more than one directory
+/// descriptor open at a time, keeping descriptor use bounded by tree depth.
 #[cfg(unix)]
-fn open_subdir_nofollow(
-    dir: &std::fs::File,
-    name: &std::ffi::OsStr,
-    abs: &Path,
+fn reopen_dir_from_root(
+    root_dir: &std::fs::File,
+    rel: &Path,
+    expected_dev: u64,
+    expected_ino: u64,
+    dirs: &std::collections::HashMap<PathBuf, (u64, u64)>,
 ) -> Result<std::fs::File> {
-    use rustix::fs::OFlags;
+    use rustix::fs::{FileType, OFlags};
 
-    let fd = rustix::fs::openat(
-        dir,
-        name,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .with_context(|| format!("Failed to open subdirectory {}", escape_path(abs)))?;
-    Ok(std::fs::File::from(fd))
+    let mut current_dir = root_dir
+        .try_clone()
+        .context("Failed to duplicate root directory handle")?;
+    let mut current: &std::fs::File = &current_dir;
+    let mut current_path = PathBuf::new();
+
+    let components: Vec<_> = rel.components().collect();
+    if components.is_empty() {
+        let stat = rustix::fs::fstat(current)?;
+        if stat.st_dev as u64 != expected_dev || stat.st_ino as u64 != expected_ino {
+            anyhow::bail!("Source root changed between collection and import");
+        }
+        return Ok(current_dir);
+    }
+
+    for (i, component) in components.iter().enumerate() {
+        let name = component.as_os_str();
+        current_path.push(name);
+
+        let is_last = i + 1 == components.len();
+        let (expected_dev, expected_ino) = dirs.get(&current_path).with_context(|| {
+            format!(
+                "Directory component {} disappeared between collection and import",
+                escape_path(&current_path)
+            )
+        })?;
+        let fd = rustix::fs::openat(
+            current,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to open directory component {}",
+                escape_path(&current_path)
+            )
+        })?;
+        let next = std::fs::File::from(fd);
+        let stat = rustix::fs::fstat(&next)?;
+        let file_type = FileType::from_raw_mode(stat.st_mode);
+        if !file_type.is_dir() {
+            anyhow::bail!(
+                "Directory component {} is not a directory",
+                escape_path(&current_path)
+            );
+        }
+        let dev = stat.st_dev as u64;
+        let ino = stat.st_ino as u64;
+        if dev != *expected_dev || ino != *expected_ino {
+            anyhow::bail!(
+                "Directory component {} changed between collection and import",
+                escape_path(&current_path)
+            );
+        }
+        if is_last {
+            return Ok(next);
+        }
+        current_dir = next;
+        current = &current_dir;
+    }
+
+    unreachable!("last component is always handled above");
 }
 
 /// Reopen a regular file for import by walking from the root directory
@@ -630,9 +720,9 @@ fn open_subdir_nofollow(
 fn reopen_file_from_root(
     root_dir: &std::fs::File,
     entry: &CollectedEntry,
-    dirs: &std::collections::HashMap<PathBuf, &CollectedEntry>,
+    dirs: &std::collections::HashMap<PathBuf, (u64, u64)>,
 ) -> Result<(std::fs::File, u64)> {
-    use rustix::fs::{AtFlags, FileType, OFlags};
+    use rustix::fs::{FileType, OFlags};
 
     let mut current_dir = root_dir
         .try_clone()
@@ -676,9 +766,9 @@ fn reopen_file_from_root(
             return Ok((file, entry.size));
         }
 
-        let expected = dirs.get(&current_path).with_context(|| {
+        let (expected_dev, expected_ino) = dirs.get(&current_path).with_context(|| {
             format!(
-                "Directory {} disappeared between collection and import",
+                "Directory component {} disappeared between collection and import",
                 escape_path(&entry.abs_path)
             )
         })?;
@@ -705,7 +795,7 @@ fn reopen_file_from_root(
         }
         let dev = stat.st_dev as u64;
         let ino = stat.st_ino as u64;
-        if dev != expected.dev || ino != expected.ino {
+        if dev != *expected_dev || ino != *expected_ino {
             anyhow::bail!(
                 "Directory component {} changed between collection and import",
                 escape_path(&entry.abs_path)
@@ -1031,11 +1121,11 @@ mod tests {
             }
         }
 
-        fn dir_map(entries: &[CollectedEntry]) -> HashMap<PathBuf, &CollectedEntry> {
+        fn dir_map(entries: &[CollectedEntry]) -> HashMap<PathBuf, (u64, u64)> {
             entries
                 .iter()
                 .filter(|e| e.is_dir)
-                .map(|e| (e.rel_path.clone(), e))
+                .map(|e| (e.rel_path.clone(), (e.dev, e.ino)))
                 .collect()
         }
 
@@ -1176,6 +1266,65 @@ mod tests {
                 .unwrap_err();
             let msg = format!("{err:#}");
             assert!(msg.contains("symlink"), "{msg}");
+        }
+
+        #[test]
+        fn add_directory_file_checked_rejects_stale_size() {
+            let root = temp_root("stale-size");
+            let file_path = root.join("file.txt");
+            std::fs::write(&file_path, b"1234567890").unwrap();
+
+            let vault_root = temp_root("stale-size-vault");
+            let vault_file = vault_root.join("vault");
+
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let session = runtime.block_on(async {
+                let manager = VaultManager::new();
+                let provider_config =
+                    serde_json::json!({"root": vault_file.to_string_lossy().to_string()});
+                manager
+                    .create_vault(
+                        VaultId::unique("StaleSize").unwrap(),
+                        b"synthetic-password",
+                        "local",
+                        provider_config,
+                        KdfParams::interactive(),
+                    )
+                    .await
+                    .unwrap()
+                    .session
+            });
+            let ops = VaultOperations::new(&session).unwrap();
+
+            // Record the original size, then change the source before import.
+            let entry = make_entry(&root, "file.txt", false);
+            std::fs::write(&file_path, b"12345").unwrap();
+
+            let root_dir = open_dir_nofollow(&root).unwrap();
+            let dirs = dir_map(&[]);
+            let dest = VaultPath::parse("/file.txt").unwrap();
+
+            let err = runtime
+                .block_on(add_directory_file_checked(
+                    &ops,
+                    Some(&root_dir),
+                    &dest,
+                    &entry,
+                    &dirs,
+                ))
+                .unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("source changed") || msg.contains("size") || msg.contains("Size"),
+                "unexpected error: {msg}"
+            );
+
+            // Core must not have written anything to the vault.
+            let metadata = runtime.block_on(ops.metadata(&dest));
+            assert!(matches!(
+                metadata,
+                Err(axiomvault_common::Error::NotFound(_))
+            ));
         }
     }
 }

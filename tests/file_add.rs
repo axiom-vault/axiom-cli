@@ -698,8 +698,12 @@ fn add_directory_preflight_refuses_non_utf8_name() {
     fs::write(source.join("ok.txt"), b"ok").unwrap();
 
     // 0xFF is not valid UTF-8, so the name cannot be represented as a vault path.
+    // Some filesystems (e.g. APFS) refuse to create such names, so skip the
+    // assertion when the fixture cannot be built.
     let bad = std::ffi::OsString::from_vec(vec![0xff]);
-    fs::write(source.join(&bad), b"bad").unwrap();
+    if std::fs::write(source.join(&bad), b"bad").is_err() {
+        return;
+    }
 
     let out = fx.add_fail(&source, "/Dokumente");
     let stderr = String::from_utf8_lossy(&out.stderr);
